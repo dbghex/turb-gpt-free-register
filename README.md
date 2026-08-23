@@ -395,7 +395,7 @@ CODEX_OAUTH_DRIVER = "browser_use"  # 可选 protocol / roxy / cloak / browser_u
 接码配置在 `config/codex.py`：
 
 ```python
-SMS_PROVIDER = "l"        # 可选 grizzly / l / h
+SMS_PROVIDER = "l"        # 可选 grizzly / hero / l / h
 SMS_API_KEY = "你的 GrizzlySMS key"  # 仅 GrizzlySMS 需要
 SMS_SERVICE = "openai"
 SMS_COUNTRY = "国家代码"
@@ -409,6 +409,22 @@ SMS_POLL_INTERVAL = 5
 H_API_BASE = "http://localhost:8788"
 H_ADMIN_AUTH_CODE = "你的H后台授权码"
 ```
+
+HeroSMS 由项目后端直接调用，不需要启动 8788 中转服务。推荐在 WebUI 的
+“配置 → 接码平台 → HeroSMS”中加载实时国家、服务和库存后保存：
+
+```dotenv
+SMS_PROVIDER=hero
+HERO_SMS_API_KEY=你的HeroSMS密钥
+HERO_SMS_SERVICE=从实时服务列表选择的代码
+HERO_SMS_COUNTRY=从实时国家列表选择的数字ID
+HERO_SMS_PRICE_MODE=quote_buffer
+HERO_SMS_PRICE_BUFFER_PERCENT=15
+```
+
+`quote_buffer` 会在任务入队时按实时最低可用报价上浮指定比例并锁定价格；
+`custom` 使用 `HERO_SMS_MAX_PRICE`；`unlimited` 不传价格上限。API Key 只保存
+在 `.env`，配置接口、任务快照和日志不会返回其明文。
 
 CPA 授权地址来源：
 
@@ -534,7 +550,12 @@ python tools/test_codex_oauth.py --email <已注册邮箱> --verbose
 补跑会消耗：
 
 - 1 次邮箱 OTP
-- 1 个接码号码
+- 仅当 OpenAI 明确要求手机验证时消耗 1 个接码号码
+
+邮箱 OTP 后如果已经进入 consent / workspace / callback，程序会判定账号已接码或
+本次无需接码，直接继续授权。拿到 callback 后，`CODEX_AUTH_URL_SOURCE=cpa` 会把
+callback 提交到当前 `CPA_MANAGEMENT_URL`，并在账号记录中保存已接码状态（不保存
+手机号或验证码）。
 
 补跑日志在：
 
@@ -660,7 +681,7 @@ Roxy 打开授权页
   ↓
 邮箱登录 + 邮箱 OTP
   ↓
-手机号验证：取号 → 填号 → 发送 → 等短信 → 填 OTP
+判断手机验证：已接码则跳过；仍要求时取号 → 填号 → 发送 → 等短信 → 填 OTP
   ↓
 等待 consent/workspace/callback
   ↓
@@ -753,6 +774,7 @@ ENABLE_CODEX_AUTO = False
 │   ├── codex_oauth.py              # Codex 协议/Roxy/Cloak 调度
 │   ├── email_provider.py           # 邮箱来源调度
 │   ├── cf_temp_mail_client.py      # Cloudflare Worker 临时邮箱
+│   ├── hero_sms_client.py           # HeroSMS 兼容 API 客户端
 │   ├── sms_provider.py             # 接码平台
 │   ├── account_export.py           # 保存账号/批次归档
 │   └── db.py                       # 文件数据库

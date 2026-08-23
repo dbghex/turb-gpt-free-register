@@ -303,6 +303,19 @@ def _human_type_text(driver, el, value: str, *, clear: bool = True) -> None:
             _human_click(driver, el, label="input_focus")
         except Exception:
             driver.execute_script("arguments[0].focus();", el)
+
+        # Cloak 的 humanize 键盘会对逐字符事件做拟人化处理，而 ChatGPT
+        # 邮箱框是 React 受控 input；每个字符都触发一次重渲染时，光标/旧值
+        # 可能被重置，最终只留下一个字符。Cloak 适配器提供原生 setter，
+        # 一次性写完整值并派发一组表单事件，点击和滚动仍保持人工化。
+        if el.__class__.__name__ == "CloakElement" and hasattr(el, "set_value"):
+            if clear:
+                el.set_value(str(value))
+            else:
+                el.send_keys(str(value))
+            human_delay("keystroke")
+            return
+
         if clear:
             from selenium.webdriver.common.keys import Keys
             mod = Keys.COMMAND
@@ -1125,6 +1138,13 @@ def _click_resend_email_otp(driver, timeout: int = 20) -> dict:
     end = time.time() + timeout
     last = None
     while time.time() < end:
+        # OTP 提交可能在本函数开始后才完成导航；已经离开验证码页就不应
+        # 再扫描首页按钮，否则会把成功登录误报为“找不到重发按钮”。
+        try:
+            if not _is_email_verification_page(driver):
+                return {"ok": True, "reason": "already_left_otp"}
+        except Exception:
+            pass
         try:
             btn = driver.execute_script(r"""
             const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
@@ -1144,7 +1164,17 @@ def _click_resend_email_otp(driver, timeout: int = 20) -> dict:
             return candidates.find(el => enabled(el) && /resend|send\s+(?:a\s+)?new\s+code|send\s+again|重新发送|重新发送电子邮件|重发|再次发送|再送信|新しい|届かない/.test((el.innerText || el.textContent || '').toLowerCase())) || null;
             """)
             if btn:
-                text = str(btn.text or btn.get_attribute('value') or btn.get_attribute('data-dd-action-name') or '').strip()
+                try:
+                    text = str(btn.text or '').strip()
+                except Exception:
+                    text = ''
+                if not text:
+                    try:
+                        text = str(driver.execute_script("return arguments[0].innerText || arguments[0].textContent || '';", btn) or '').strip()
+                    except Exception:
+                        text = ''
+                if not text:
+                    text = str(btn.get_attribute('value') or btn.get_attribute('data-dd-action-name') or '').strip()
                 _human_click(driver, btn, label="resend_otp")
                 logger.info("%s[OTP] 已点击重新发送验证码按钮：%s", _log_prefix(driver), text or '-')
                 time.sleep(random.uniform(1.1, 2.4) if _browser_actions_enabled() else 1.5)
@@ -1169,9 +1199,9 @@ def _wait_after_email_otp_submit(driver, timeout: int = 30) -> str:
         if not _is_email_verification_page(driver):
             return 'accepted'
         last = _email_otp_page_state(driver)
-        invalid = any(str(i.get('ariaInvalid') or '').lower() == 'true' for i in (last.get('inputs') or []))
-        if invalid or (last.get('errors') or []):
-            return 'invalid'
+        # 不要因为跳转前的瞬时 aria-invalid/错误节点立即判定失败。React
+        # 页面提交 OTP 后通常会先保留验证码 DOM，再异步导航到首页；
+        # 提前返回会让上层误点“重新发送”，并把已登录账号标成失败。
     if _is_email_verification_page(driver):
         # 超时仍停留：若无明确错误标记，判定为提交成功、跳转缓慢，按 accepted 放行。
         has_error_mark = bool(last.get('errors')) or any(
@@ -1189,6 +1219,11 @@ def _wait_after_email_otp_submit(driver, timeout: int = 30) -> str:
 
 
 def _click_continue(driver) -> None:
+    try:
+        if not _is_email_verification_page(driver):
+            return
+    except Exception:
+        pass
     _click_any(driver, [
         "button[type='submit']",
         "//button[contains(., 'Continue')]",
@@ -1980,7 +2015,7 @@ def _check_manual_stop() -> None:
 def run_roxy_registration(email: str, name: str, birthday: str, proxy: str = None, otp_code: str = None, batch_dir: Path | None = None) -> dict:
     """Roxy 指纹浏览器自动化注册入口。"""
     client = RoxyBrowserClient()
-    opened = client.open_profile()
+    opened = client.open_profile(proxy_url=proxy)
     driver = None
     create_acknowledged = False
     openai_password: str | None = None

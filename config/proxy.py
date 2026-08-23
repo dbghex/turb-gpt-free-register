@@ -2,15 +2,47 @@
 """
 代理池配置
 
-每次注册随机抽取一个代理，保证不同 sid 之间彼此独立，避免风控关联。
+注册任务使用 take_registration_proxy(s)：随机无放回领取并持久化删除；
+套餐/查活等非注册任务仍使用 pick_proxy()，不会消耗注册代理池。
 
 协议说明：
     - http:// / https://   HTTP(S) 代理
     - socks5://            SOCKS5（DNS 本地解析，可能泄漏）
     - socks5h://           SOCKS5（DNS 在代理端解析，推荐，避免 DNS-IP 错配）
 """
-from config.env_loader import apply_env_overrides
+from config.env_loader import apply_env_overrides, env_write_lock, read_env_file, _write_env_values_locked, _coerce_env_value
 import random
+import hashlib
+
+
+_PROXY_SCHEMES = {"http", "https", "socks5", "socks5h"}
+
+
+def normalize_proxy_url(value: str | None, *, default_scheme: str = "http") -> str:
+    """规范化代理池条目为 URL。
+
+    支持：
+      - ``user:pass@host:port``（无协议头，默认 HTTP）
+      - ``http(s)://user:pass@host:port``
+      - ``socks5[h]://user:pass@host:port``
+      - 旧格式 ``host:port:user:pass``
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    scheme = str(default_scheme or "http").strip().lower() or "http"
+    if scheme not in _PROXY_SCHEMES:
+        scheme = "http"
+    if "://" in text:
+        return text
+    if "@" in text:
+        return f"{scheme}://{text}"
+    # 兼容旧代理池的 host:port:user:pass 写法。
+    parts = text.split(":")
+    if len(parts) == 4 and all(parts):
+        host, port, username, password = parts
+        return f"{scheme}://{username}:{password}@{host}:{port}"
+    return f"{scheme}://{text}"
 
 
 # 本地代理入口；实际出口地区以代理/分流规则为准。
@@ -50,6 +82,66 @@ PLAN_CHECK_JITTER = 0.3
 def pick_proxy() -> str:
     """从代理池中随机抽取一个代理 URL；池为空时返回空串（即不使用代理）。"""
     return random.choice(PROXY_POOL) if PROXY_POOL else ""
+
+
+class ProxyPoolError(RuntimeError):
+    pass
+
+
+class ProxyPoolEmptyError(ProxyPoolError):
+    def __init__(self, message="代理池为空，请补充代理"):
+        super().__init__(message)
+        self.available = 0
+
+
+class ProxyPoolInsufficientError(ProxyPoolError):
+    def __init__(self, required: int, available: int):
+        self.required, self.available = int(required), int(available)
+        self.missing = max(0, self.required - self.available)
+        super().__init__(f"代理池可用代理不足：需要 {self.required} 条，当前仅 {self.available} 条，请补充 {self.missing} 条代理")
+
+
+def _canonical_pool(raw) -> list[str]:
+    seen, out = set(), []
+    for item in raw or []:
+        proxy = normalize_proxy_url(str(item or ""))
+        if proxy and proxy not in seen:
+            seen.add(proxy)
+            out.append(proxy)
+    return out
+
+
+def registration_proxy_pool_status() -> dict:
+    with env_write_lock():
+        values = read_env_file()
+        raw = values.get("PROXY_POOL")
+        pool = _canonical_pool(_coerce_env_value(raw, PROXY_POOL, "list_str_multiline") if raw is not None else PROXY_POOL)
+        digest = hashlib.sha256("\n".join(pool).encode()).hexdigest()[:16]
+        return {"available": len(pool), "revision": digest}
+
+
+def take_registration_proxies(count: int = 1) -> list[str]:
+    count = int(count)
+    if count < 1:
+        return []
+    with env_write_lock():
+        values = read_env_file()
+        raw = values.get("PROXY_POOL")
+        pool = _canonical_pool(_coerce_env_value(raw, PROXY_POOL, "list_str_multiline") if raw is not None else PROXY_POOL)
+        if len(pool) < count:
+            if not pool:
+                raise ProxyPoolEmptyError()
+            raise ProxyPoolInsufficientError(count, len(pool))
+        chosen = random.sample(pool, count)
+        chosen_set = set(chosen)
+        remaining = [item for item in pool if item not in chosen_set]
+        _write_env_values_locked({"PROXY_POOL": "\n".join(remaining) if remaining else "[]"})
+        PROXY_POOL[:] = remaining
+        return chosen
+
+
+def take_registration_proxy() -> str:
+    return take_registration_proxies(1)[0]
 
 
 # 兼容入口：默认每次进程启动随机选一个，作为本次注册全程的固定代理

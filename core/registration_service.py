@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from core import codex_retry_service, db
+from core import codex_retry_service, db, sms_provider
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,13 @@ _STOP_EVENTS: dict[int, threading.Event] = {}
 _ACTIVE_JOBS: set[int] = set()
 _STOP_LOCK = threading.Lock()
 _THREAD_CTX = threading.local()
+
+# Web 服务启动即恢复上次进程遗留的 Hero/Grizzly 取消任务；sms_provider 在首次
+# 取号前还会兜底调用一次，因此 CLI 入口也具备恢复能力。
+try:
+    sms_provider.resume_pending_cancellations()
+except Exception:
+    logger.exception("[Service] 恢复待取消接码激活失败")
 
 
 class StopRequested(RuntimeError):
@@ -274,7 +281,12 @@ class _JobLogContext:
             logging.getLogger().removeHandler(self.handler)
 
 
-def _run_one_job(job_id: int, log_file: str) -> None:
+def _run_one_job(
+    job_id: int,
+    log_file: str,
+    allocated_proxy: str | None = None,
+    sms_settings: sms_provider.SmsTaskSettings | None = None,
+) -> None:
     """单任务入口（线程池里跑这个）。"""
     log_logger = logging.getLogger(__name__)
     _activate_job(job_id)
@@ -286,12 +298,19 @@ def _run_one_job(job_id: int, log_file: str) -> None:
         log_logger.info(f"[Job {job_id}] 任务记录已删除，跳过执行")
         _deactivate_job(job_id)
         return
+    if allocated_proxy is None:
+        allocated_proxy = current.get("proxy_used")
     if current.get("status") == "cancelled":
         log_logger.info(f"[Job {job_id}] 已被用户取消，跳过执行")
         _deactivate_job(job_id)
         return
 
+    # 旧任务/直接内部调用没有显式参数时，在真正开始执行的这一刻补一份快照。
+    # 正常 WebUI 入队会把提交时捕获的完整对象传进来。
+    sms_settings = sms_settings or sms_provider.SmsTaskSettings.from_runtime()
     db.update_job(job_id, status="running", started_at=datetime.now().isoformat(timespec="seconds"))
+    sms_context = sms_provider.bind_settings(sms_settings)
+    sms_context.__enter__()
 
     email: str | None = None
     try:
@@ -301,7 +320,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             email, name, birthday = _prepare_registration_args()
             db.update_job(job_id, email=email)
             check_stop_requested()
-            result = run_registration(email=email, name=name, birthday=birthday)
+            result = run_registration(email=email, name=name, birthday=birthday, proxy=allocated_proxy)
             if is_stop_requested(job_id):
                 _release_unconsumed_job_email(email, "用户手动停止")
                 db.update_job(
@@ -320,7 +339,10 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     account_id=result.get("account_id"),
                     completed_at=datetime.now().isoformat(timespec="seconds"),
                 )
-                log_logger.info(f"[Job {job_id}] 成功: {result.get('email')}")
+                if result.get("registration_status") == "already_registered":
+                    log_logger.info(f"[Job {job_id}] 已注册账号已登录并添加到账号库: {result.get('email')}")
+                else:
+                    log_logger.info(f"[Job {job_id}] 成功: {result.get('email')}")
             else:
                 # 注意：失败也可能伴随 account_id（如 Codex 失败但账号已注册成功）
                 err = (result or {}).get("error") if isinstance(result, dict) else "unknown"
@@ -371,10 +393,17 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             completed_at=datetime.now().isoformat(timespec="seconds"),
         )
     finally:
+        sms_context.__exit__(None, None, None)
         _deactivate_job(job_id)
 
 
-def _run_codex_retry_job(job_id: int, log_file: str, email: str, account_id: int) -> None:
+def _run_codex_retry_job(
+    job_id: int,
+    log_file: str,
+    email: str,
+    account_id: int,
+    sms_settings: sms_provider.SmsTaskSettings | None = None,
+) -> None:
     """把 Codex 补跑作为标准任务执行，并复用任务状态、日志和停止入口。"""
     _activate_job(job_id)
     current = db.get_job(job_id)
@@ -383,7 +412,10 @@ def _run_codex_retry_job(job_id: int, log_file: str, email: str, account_id: int
         _deactivate_job(job_id)
         return
 
+    sms_settings = sms_settings or sms_provider.SmsTaskSettings.from_runtime()
     db.update_job(job_id, status="running", started_at=datetime.now().isoformat(timespec="seconds"))
+    sms_context = sms_provider.bind_settings(sms_settings)
+    sms_context.__enter__()
     try:
         result = codex_retry_service.run_worker(
             email,
@@ -420,6 +452,7 @@ def _run_codex_retry_job(job_id: int, log_file: str, email: str, account_id: int
         codex_retry_service.release(email)
         logger.exception("[Job %s] Codex 补跑异常", job_id)
     finally:
+        sms_context.__exit__(None, None, None)
         _deactivate_job(job_id)
 
 
@@ -439,16 +472,38 @@ def submit_registration(count: int = 1, email_source: str | None = None, workers
         from config import email as _email_cfg
         email_source = _email_cfg.EMAIL_SOURCE
 
+    from config import proxy as proxy_cfg, roxybrowser as roxy_cfg
+    driver = str(getattr(roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
+    local_proxy_driver = driver in {"protocol", "api", "http", "roxy", "roxybrowser", "fingerprint", "browser", "cloak", "cloakbrowser"}
+    if driver in {"roxy", "roxybrowser", "fingerprint", "browser"} and str(getattr(roxy_cfg, "ROXY_PROFILE_ID", "") or "").strip() not in {"", "-", "none", "null"}:
+        raise proxy_cfg.ProxyPoolError("Roxy 已配置固定 Profile，无法为每个注册任务绑定独立代理；请清空 ROXY_PROFILE_ID")
+    # 接码配置/推荐价格先准备成功再消耗一次性代理；配置错误或 Hero 无库存时
+    # 不应让尚未创建的任务白白取走代理池条目。
+    sms_settings = sms_provider.prepare_task_settings(
+        sms_provider.SmsTaskSettings.from_runtime()
+    )
+    sms_snapshot = sms_settings.public_snapshot()
+    allocated = proxy_cfg.take_registration_proxies(count) if local_proxy_driver else [None] * count
     # 创建/切换线程池和提交本批任务必须整体串行化：否则另一请求在本批提交中途
     # 切换 workers 并 shutdown 旧池，会导致后续 submit 报 cannot schedule new futures after shutdown。
     with _executor_lock:
         executor = get_executor(max_workers=workers)
         effective_workers = get_executor_workers()
         jobs = []
-        for _ in range(count):
-            job = db.create_job(email_source=email_source)
+        for allocated_proxy in allocated:
+            job = db.create_job(
+                email_source=email_source,
+                proxy_used=allocated_proxy,
+                sms_snapshot=sms_snapshot,
+            )
             try:
-                executor.submit(_run_one_job, job["id"], job["log_file"])
+                executor.submit(
+                    _run_one_job,
+                    job["id"],
+                    job["log_file"],
+                    allocated_proxy,
+                    sms_settings,
+                )
             except Exception as exc:
                 db.update_job(
                     int(job["id"]),
@@ -536,6 +591,16 @@ def retry_job(job_id: int, workers: int | None = None) -> dict:
     account = _account_for_job(source)
     email = str((account or {}).get("email") or source.get("email") or "").strip()
     account_id = int(account["id"]) if account and account.get("id") is not None else None
+    try:
+        sms_settings = sms_provider.prepare_task_settings(
+            sms_provider.SmsTaskSettings.from_runtime()
+        )
+    except sms_provider.SmsConfigurationError as exc:
+        return {"ok": False, "error": str(exc), "status": 400}
+    except sms_provider.SmsNoNumbersError as exc:
+        return {"ok": False, "error": str(exc), "status": 409}
+    except sms_provider.SmsProviderError as exc:
+        return {"ok": False, "error": str(exc), "status": 502}
     reserved_codex = False
     if action == "codex":
         if not email or account_id is None:
@@ -551,6 +616,7 @@ def retry_job(job_id: int, workers: int | None = None) -> dict:
             email_source=str(source.get("email_source") or "outlook"),
             email=email if action == "codex" else None,
             account_id=account_id if action == "codex" else None,
+            sms_snapshot=sms_settings.public_snapshot(),
         )
     except LookupError as exc:
         if reserved_codex:
@@ -580,9 +646,22 @@ def retry_job(job_id: int, workers: int | None = None) -> dict:
         with _executor_lock:
             executor = get_executor(max_workers=workers)
             if action == "codex":
-                executor.submit(_run_codex_retry_job, job["id"], job["log_file"], email, int(account_id))
+                executor.submit(
+                    _run_codex_retry_job,
+                    job["id"],
+                    job["log_file"],
+                    email,
+                    int(account_id),
+                    sms_settings,
+                )
             else:
-                executor.submit(_run_one_job, job["id"], job["log_file"])
+                executor.submit(
+                    _run_one_job,
+                    job["id"],
+                    job["log_file"],
+                    None,
+                    sms_settings,
+                )
     except Exception as exc:
         if reserved_codex:
             codex_retry_service.release(email)

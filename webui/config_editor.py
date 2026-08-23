@@ -450,7 +450,7 @@ EDITABLE_FIELDS = [
     # ---- 代理池 ----
     {
         "key": "PROXY_POOL", "file": "proxy.py", "type": "list_str_multiline", "group": "代理池",
-        "label": "代理池(每行一个)", "help": "每行一个代理 URL，留空行会被忽略；为空则不使用代理",
+        "label": "代理池(每行一个)", "help": "注册任务每次随机领取一条并永久删除；数量不足时整批拒绝，请及时补充代理。留空行会被忽略",
     },
     {
         "key": "PLAN_CHECK_PROXY_MODE", "file": "proxy.py", "type": "str", "group": "代理池",
@@ -505,7 +505,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "EXTRACT_LINK_TYPE", "file": "extract_link.py", "type": "str", "group": "提链",
-        "label": "提链类型", "help": "支持 pix / upi / kakao_pay / ideal",
+        "label": "提链类型", "help": "支持 pix / upi / kakao_pay / kakao / ideal / gcash",
     },
     {
         "key": "EXTRACT_LINK_WORKERS", "file": "extract_link.py", "type": "int", "group": "提链",
@@ -566,7 +566,11 @@ EDITABLE_FIELDS = [
 
     {
         "key": "SMS_PROVIDER", "file": "codex.py", "type": "str", "group": "接码平台",
-        "label": "接码通道", "help": "grizzly / l / h；l 使用 L_API.md，h 使用 H_API.md 定义的本地取号服务",
+        "label": "接码通道", "help": "grizzly / l / h / hero；HeroSMS 的国家、服务和价格请在 HeroSMS 配置区选择",
+    },
+    {
+        "key": "SMS_API_BASE", "file": "codex.py", "type": "str", "group": "接码平台",
+        "label": "GrizzlySMS API 地址", "help": "GrizzlySMS 的 SMS-Activate 兼容接口地址",
     },
     {
         "key": "SMS_COUNTRY", "file": "codex.py", "type": "str", "group": "接码平台",
@@ -585,9 +589,64 @@ EDITABLE_FIELDS = [
         "label": "单号等短信(秒)", "help": "单个号等待短信到达的最长秒数，超时则换号",
     },
     {
+        "key": "SMS_MAX_PRICE", "file": "codex.py", "type": "str", "group": "接码平台",
+        "label": "GrizzlySMS 价格上限", "help": "单个号码愿意支付的最高价格；留空表示不限价",
+    },
+    {
+        "key": "SMS_POLL_INTERVAL", "file": "codex.py", "type": "int", "group": "接码平台",
+        "label": "短信轮询间隔(秒)", "help": "查询接码平台验证码状态的间隔",
+    },
+    {
+        "key": "SMS_REQUEST_TIMEOUT", "file": "codex.py", "type": "int", "group": "接码平台",
+        "label": "接码请求超时(秒)", "help": "调用接码平台 API 的 HTTP 超时时间",
+    },
+    {
         "key": "SMS_API_KEY", "file": "codex.py", "type": "str", "group": "接码平台",
         "label": "GrizzlySMS API密钥", "help": "GrizzlySMS 平台 API Key，保存在 .env（SMS_API_KEY），不写回 config/*.py",
         "storage": "env", "secret": True,
+    },
+
+    # ---- HeroSMS ----
+    {
+        "key": "HERO_SMS_API_BASE", "file": "codex.py", "type": "str", "group": "接码平台",
+        "label": "API 地址", "help": "HeroSMS 的 SMS-Activate 兼容接口；通常无需修改",
+    },
+    {
+        "key": "HERO_SMS_API_KEY", "file": "codex.py", "type": "str", "group": "接码平台",
+        "label": "API Key", "help": "只写入 .env；页面仅显示是否已配置，留空保存不会覆盖原 Key",
+        "storage": "env", "secret": True, "write_only": True,
+    },
+    {
+        "key": "HERO_SMS_COUNTRY", "file": "codex.py", "type": "str", "group": "接码平台",
+        "label": "国家", "help": "HeroSMS 数字国家 ID，不是电话区号；建议从实时国家列表选择",
+    },
+    {
+        "key": "HERO_SMS_SERVICE", "file": "codex.py", "type": "str", "group": "接码平台",
+        "label": "服务", "help": "HeroSMS 服务代码；建议从所选国家的实时服务列表选择",
+    },
+    {
+        "key": "HERO_SMS_PRICE_MODE", "file": "codex.py", "type": "str", "group": "接码平台",
+        "label": "价格策略", "help": "quote_buffer=实时报价上浮；custom=自定义上限；unlimited=不限价",
+    },
+    {
+        "key": "HERO_SMS_MAX_PRICE", "file": "codex.py", "type": "str", "group": "接码平台",
+        "label": "自定义价格上限", "help": "price mode 为 custom 时使用；按 HeroSMS 账户计价单位填写",
+    },
+    {
+        "key": "HERO_SMS_PRICE_BUFFER_PERCENT", "file": "codex.py", "type": "int", "group": "接码平台",
+        "label": "报价上浮(%)", "help": "实时推荐价格在当前报价上增加的百分比；默认 15%",
+    },
+    {
+        "key": "HERO_SMS_FIXED_PRICE", "file": "codex.py", "type": "bool", "group": "接码平台",
+        "label": "固定价格购买", "help": "开启后向 HeroSMS 传 fixedPrice；默认关闭",
+    },
+    {
+        "key": "HERO_SMS_OPERATOR", "file": "codex.py", "type": "str", "group": "接码平台",
+        "label": "运营商", "help": "可选；多个运营商用英文逗号分隔",
+    },
+    {
+        "key": "HERO_SMS_PHONE_EXCEPTION", "file": "codex.py", "type": "str", "group": "接码平台",
+        "label": "排除号段", "help": "可选；多个号段用英文逗号分隔，HeroSMS 最多支持 20 个",
     },
     {
         "key": "H_API_BASE", "file": "codex.py", "type": "str", "group": "接码平台",
@@ -791,7 +850,17 @@ def get_config() -> list[dict]:
             value = _normalize_config_value(value, field["type"])
         item = dict(field)
         item["storage"] = "env"
-        item["value"] = value
+        if field.get("write_only"):
+            item["configured"] = bool(str(value or "").strip())
+            item["value"] = ""
+        else:
+            item["value"] = value
+        if key == "PROXY_POOL":
+            try:
+                from config.proxy import registration_proxy_pool_status
+                item["revision"] = registration_proxy_pool_status().get("revision")
+            except Exception:
+                item["revision"] = ""
         out.append(item)
     return out
 
@@ -928,20 +997,48 @@ def update_config(updates: dict) -> dict:
     """批量更新配置。所有 WebUI 可编辑项只写项目根 `.env`。"""
     from config.env_loader import write_env_values, load_env
 
-    updated, ignored = [], []
+    updated, ignored, preserved = [], [], []
     env_updates: dict[str, str] = {}
 
+    raw_clear = updates.get("__clear_secrets__", [])
+    if isinstance(raw_clear, str):
+        raw_clear = [raw_clear]
+    clear_secrets = {
+        str(key) for key in raw_clear
+        if _FIELD_BY_KEY.get(str(key), {}).get("write_only")
+    } if isinstance(raw_clear, (list, tuple, set)) else set()
+
     for key, value in updates.items():
+        if key == "__clear_secrets__":
+            continue
         field = _FIELD_BY_KEY.get(key)
         if field is None:
             ignored.append(key)
             continue
+        if field.get("write_only"):
+            if key in clear_secrets:
+                env_updates[key] = ""
+                updated.append(key)
+                continue
+            if not _normalize_config_value(value, field["type"]):
+                preserved.append(key)
+                continue
         env_updates[key] = _format_env_value(value, field["type"])
         updated.append(key)
 
+    # 允许只发送 {"__clear_secrets__": ["HERO_SMS_API_KEY"]} 显式清空。
+    for key in clear_secrets:
+        if key not in env_updates:
+            env_updates[key] = ""
+            updated.append(key)
 
     env_updated = write_env_values(env_updates) if env_updates else []
     if env_updated:
         load_env(override=True)
 
-    return {"updated": updated, "ignored": ignored, "env_updated": env_updated}
+    return {
+        "updated": updated,
+        "ignored": ignored,
+        "preserved": preserved,
+        "env_updated": env_updated,
+    }

@@ -738,7 +738,7 @@
     .accounts-table-v2 .col-email { width: 240px; }
     .accounts-table-v2 .col-source { width: 90px; }
     .accounts-table-v2 .col-token { width: 100px; }
-    .accounts-table-v2 .col-plan { width: 120px; }
+    .accounts-table-v2 .col-plan { width: 190px; }
     .accounts-table-v2 .col-note { width: 140px; }
     .accounts-table-v2 .col-small { width: 72px; }
     .accounts-table-v2 .col-status { width: 100px; }
@@ -786,6 +786,21 @@
     .accounts-table-v2 .acc-v2-sub {
       margin-top: 2px; color: #909399; font-size: 12px; line-height: 1.3;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .accounts-table-v2 .gcash-eligibility-cell {
+      display: flex; align-items: flex-start; gap: 4px; flex-wrap: wrap;
+      margin-top: 5px; max-width: 100%; overflow: visible;
+      white-space: normal; text-overflow: clip;
+    }
+    .accounts-table-v2 .gcash-eligibility-slot {
+      margin-top: 4px; overflow: visible; text-overflow: clip; white-space: normal;
+    }
+    .accounts-table-v2 .gcash-eligibility-cell .pill {
+      flex: 0 0 auto; max-width: 100%; white-space: nowrap;
+    }
+    .accounts-table-v2 .gcash-eligibility-detail {
+      flex-basis: 100%; color: #909399; font-size: 11px; line-height: 1.35;
+      white-space: normal; overflow-wrap: anywhere;
     }
     .accounts-table-v2 .acc-v2-muted { color: #c0c4cc; }
     .accounts-table-v2 .pill {
@@ -1881,6 +1896,190 @@
     .config-switch-v2-help {
       margin: 0; font-size: 12px; color: #909399; line-height: 1.55;
     }
+
+    /* ---- HeroSMS 取号工作台 ---- */
+    .hero-sms-workbench {
+      --hero-signal: #0f766e;
+      --hero-signal-soft: #ecfdf5;
+      --hero-cost: #a16207;
+      --hero-ink: #172033;
+      --hero-line: #d9e2ec;
+      grid-column: 1 / -1;
+      margin-top: 18px;
+      color: var(--hero-ink);
+    }
+    .hero-sms-connection {
+      display: grid; grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px; align-items: end;
+      padding: 16px 0 18px;
+      border-top: 1px solid var(--hero-line);
+      border-bottom: 1px solid var(--hero-line);
+    }
+    .hero-sms-connection-fields {
+      display: grid; grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr);
+      gap: 14px 18px; min-width: 0;
+    }
+    .hero-sms-field {
+      display: grid; gap: 6px; min-width: 0;
+      font-size: 13px; font-weight: 600; color: #303133;
+    }
+    .hero-sms-field small {
+      min-height: 18px; color: #909399; font-size: 12px; font-weight: 400; line-height: 1.45;
+    }
+    .hero-sms-field input,
+    .hero-sms-field select {
+      margin: 0; width: 100%; max-width: 100%; min-height: 40px;
+      border-radius: 6px; background: #fff;
+    }
+    .hero-sms-actions {
+      display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    }
+    .hero-sms-actions .btn { min-height: 40px; }
+    .hero-sms-actions .btn.hero-primary {
+      color: #fff; background: var(--hero-signal); border-color: var(--hero-signal);
+    }
+    .hero-sms-actions .btn.hero-primary:hover { background: #115e59; }
+    .hero-sms-status {
+      display: flex; align-items: flex-start; gap: 9px;
+      min-height: 22px; margin-top: 12px;
+      color: #667085; font-size: 12px; line-height: 1.5;
+    }
+    .hero-sms-status-dot {
+      width: 8px; height: 8px; margin-top: 5px; flex: 0 0 8px;
+      border-radius: 50%; background: #cbd5e1;
+    }
+    .hero-sms-status.is-ready .hero-sms-status-dot { background: var(--hero-signal); }
+    .hero-sms-status.is-error { color: #b42318; }
+    .hero-sms-status.is-error .hero-sms-status-dot { background: #d92d20; }
+    .hero-sms-status.is-loading .hero-sms-status-dot {
+      background: var(--hero-cost); animation: hero-signal-pulse 1.1s ease-in-out infinite;
+    }
+    @keyframes hero-signal-pulse {
+      0%, 100% { opacity: .38; transform: scale(.8); }
+      50% { opacity: 1; transform: scale(1); }
+    }
+    .hero-sms-rail {
+      position: relative;
+      display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 24px; margin-top: 24px;
+    }
+    .hero-sms-rail::before {
+      content: ''; position: absolute; left: 19px; right: 19px; top: 19px;
+      height: 1px; background: var(--hero-line);
+    }
+    .hero-sms-step { position: relative; min-width: 0; }
+    .hero-sms-step-marker {
+      position: relative; z-index: 1;
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 38px; height: 38px; border: 1px solid var(--hero-line); border-radius: 50%;
+      background: #fff; color: #667085;
+      font: 700 12px/1 ui-monospace, "JetBrains Mono", Consolas, monospace;
+    }
+    .hero-sms-step.is-complete .hero-sms-step-marker {
+      color: #fff; border-color: var(--hero-signal); background: var(--hero-signal);
+    }
+    .hero-sms-step-body { padding-top: 12px; }
+    .hero-sms-step-title {
+      min-height: 22px; margin: 0 0 3px;
+      color: #303133; font-size: 14px; font-weight: 700; line-height: 1.45;
+    }
+    .hero-sms-step-copy {
+      min-height: 36px; margin: 0 0 10px;
+      color: #909399; font-size: 12px; line-height: 1.5;
+    }
+    .hero-sms-step select,
+    .hero-sms-step input { margin-top: 0; min-height: 40px; }
+    .hero-sms-quote {
+      display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+      border-top: 1px solid var(--hero-line); border-bottom: 1px solid var(--hero-line);
+      background: #fbfcfd;
+    }
+    .hero-sms-metric {
+      min-width: 0; padding: 11px 12px;
+      border-right: 1px solid var(--hero-line);
+    }
+    .hero-sms-metric:last-child { border-right: none; }
+    .hero-sms-metric span {
+      display: block; color: #909399; font-size: 11px; line-height: 1.4;
+    }
+    .hero-sms-metric strong {
+      display: block; margin-top: 3px; overflow: hidden; text-overflow: ellipsis;
+      color: #303133; font: 700 15px/1.35 ui-monospace, "JetBrains Mono", Consolas, monospace;
+      white-space: nowrap;
+    }
+    .hero-sms-metric:first-child strong { color: var(--hero-cost); }
+    .hero-sms-price-panel {
+      margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--hero-line);
+      display: grid; gap: 16px;
+    }
+    .hero-sms-price-head {
+      display: flex; justify-content: space-between; align-items: flex-start; gap: 14px;
+    }
+    .hero-sms-price-head h4 { margin: 0; font-size: 15px; color: #303133; }
+    .hero-sms-price-head p { margin: 4px 0 0; color: #909399; font-size: 12px; line-height: 1.5; }
+    .hero-sms-price-mode {
+      display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+      width: min(560px, 100%); padding: 3px;
+      border: 1px solid var(--hero-line); border-radius: 8px; background: #f7f9fb;
+    }
+    .hero-sms-price-mode button {
+      min-height: 36px; border: none; border-radius: 6px; background: transparent;
+      color: #667085; cursor: pointer; font: 600 12px/1.25 inherit; padding: 6px 10px;
+    }
+    .hero-sms-price-mode button:hover { color: #303133; }
+    .hero-sms-price-mode button.is-active {
+      color: var(--hero-signal); background: #fff; box-shadow: 0 1px 4px rgba(15, 23, 42, .08);
+    }
+    .hero-sms-price-grid {
+      display: grid; grid-template-columns: minmax(220px, 1fr) minmax(180px, .75fr);
+      gap: 14px 18px; align-items: start;
+    }
+    .hero-sms-fixed-toggle {
+      display: grid; grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px; align-items: center; min-height: 40px; padding-top: 22px;
+    }
+    .hero-sms-fixed-toggle b { display: block; color: #303133; font-size: 13px; }
+    .hero-sms-fixed-toggle small { display: block; margin-top: 3px; color: #909399; font-size: 12px; line-height: 1.4; }
+    .hero-sms-advanced { border-top: 1px solid var(--hero-line); }
+    .hero-sms-advanced summary {
+      width: fit-content; padding: 13px 0 0; cursor: pointer;
+      color: #667085; font-size: 12px; font-weight: 700;
+    }
+    .hero-sms-advanced-fields {
+      display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px 18px; margin-top: 14px;
+    }
+    .hero-sms-balance {
+      min-width: 120px; color: #667085; font-size: 12px; text-align: right;
+    }
+    .hero-sms-balance strong {
+      display: block; margin-top: 2px; color: var(--hero-signal);
+      font: 700 16px/1.25 ui-monospace, "JetBrains Mono", Consolas, monospace;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .hero-sms-status.is-loading .hero-sms-status-dot { animation: none; }
+    }
+    @media (max-width: 900px) {
+      .hero-sms-connection { grid-template-columns: 1fr; align-items: stretch; }
+      .hero-sms-actions { justify-content: flex-start; }
+      .hero-sms-balance { text-align: left; }
+      .hero-sms-rail { grid-template-columns: 1fr; gap: 20px; }
+      .hero-sms-rail::before { left: 19px; right: auto; top: 19px; bottom: 19px; width: 1px; height: auto; }
+      .hero-sms-step { display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 14px; }
+      .hero-sms-step-body { padding-top: 0; }
+      .hero-sms-step-copy { min-height: 0; }
+    }
+    @media (max-width: 700px) {
+      .hero-sms-connection-fields,
+      .hero-sms-price-grid,
+      .hero-sms-advanced-fields { grid-template-columns: 1fr; }
+      .hero-sms-price-head { display: grid; }
+      .hero-sms-price-mode { grid-template-columns: 1fr; }
+      .hero-sms-fixed-toggle { padding-top: 0; }
+      .hero-sms-quote { grid-template-columns: 1fr; }
+      .hero-sms-metric { border-right: none; border-bottom: 1px solid var(--hero-line); }
+      .hero-sms-metric:last-child { border-bottom: none; }
+    }
     @media (max-width: 1100px) {
       .config-switches-v2 { grid-template-columns: 1fr; gap: 16px; }
     }
@@ -2146,7 +2345,7 @@
           <span class="acc-v2-btn-group-title">套餐/提链</span>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedLiveV2" onclick="checkSelectedLive()" title="重新登录选中账号；成功且未封号则标记正常，并刷新最新 AT/accessToken">查活</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedPlansV2" disabled title="查询选中账号当前套餐；free 账号会检查 Plus 试用资格">查套餐</button>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnExtractSelectedLinksV2" disabled title="给选中的 free(可Plus试用) 账号批量提链，类型按配置 PIX/UPI/KAKAO_PAY/IDEAL">提链</button>
+          <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnExtractSelectedLinksV2" disabled title="给选中的 free(可Plus试用) 账号批量提链，类型按配置 PIX/UPI/KAKAO_PAY/IDEAL/GCASH">提链</button>
         </div>
         <div class="acc-v2-btn-group">
           <span class="acc-v2-btn-group-title">Agent</span>
@@ -2449,6 +2648,7 @@ const $$ = (s) => Array.from(document.querySelectorAll(s));
 let copySeq = 0;
 const copyStore = new Map();
 let ACCOUNTS = [], OUTLOOK = [], CONFIG = [];
+let ACTIVE_EXTRACT_LINK_TYPE = 'upi';
 let ACCOUNTS_TOTAL = 0;
 let OUTLOOK_TOTAL = 0;
 let SHOW_ARCHIVED_ACCOUNTS = false;
@@ -2642,7 +2842,12 @@ async function copyText(text) {
 async function api(url, opts) {
   const r = await fetch(url, opts);
   const j = await r.json().catch(()=>({}));
-  if (!r.ok) throw new Error(j.error || ('HTTP '+r.status));
+  if (!r.ok) {
+    const detail = j.detail && typeof j.detail === 'object'
+      ? (j.detail.message || j.detail.detail || j.detail.reason || j.detail.code)
+      : j.detail;
+    throw new Error(j.error || j.message || detail || j.reason || ('请求失败（HTTP '+r.status+'）'));
+  }
   return j;
 }
 function debounce(fn, wait=250) {
@@ -2669,11 +2874,14 @@ $$('nav button').forEach(b => b.addEventListener('click', () => activateTab(b.da
 async function loadSummary() {
   try {
     const s = await api('/api/summary');
+    const previousExtractType = ACTIVE_EXTRACT_LINK_TYPE;
+    ACTIVE_EXTRACT_LINK_TYPE = String(s.extract_link_type || ACTIVE_EXTRACT_LINK_TYPE || 'upi').toLowerCase();
     $('#statAccounts').textContent = s.accounts;
     $('#statOutlook').textContent = s.outlook_total;
     $('#statAvailable').textContent = s.outlook_available;
     $('#statUsed').textContent = s.outlook_used;
     $('#statFailed').textContent = s.outlook_failed;
+    if (previousExtractType !== ACTIVE_EXTRACT_LINK_TYPE && ACCOUNTS.length) renderAccounts();
   } catch(e) {}
 }
 
@@ -3109,6 +3317,7 @@ async function loadAccounts() {
     const dateTo = document.getElementById('dateToAccountsV2')?.value || '';
     const p = PAGERS.accounts;
     const res = await api(`/api/accounts?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&archived=${encodeURIComponent(archived)}&plan=${encodeURIComponent(plan)}&q=${encodeURIComponent(q)}&date_from=${encodeURIComponent(dateFrom)}&date_to=${encodeURIComponent(dateTo)}`);
+    ACTIVE_EXTRACT_LINK_TYPE = String(res.extract_link_type || ACTIVE_EXTRACT_LINK_TYPE || 'upi').toLowerCase();
     ACCOUNTS = res.items || [];
     ACCOUNTS_TOTAL = Number(res.total || ACCOUNTS.length || 0);
     const totalPages = Math.max(1, Math.ceil(ACCOUNTS_TOTAL / p.size));
@@ -3126,6 +3335,7 @@ async function pollAccountPlanStatuses() {
     const q = getAccountsQuery();
     const p = PAGERS.accounts;
     const snapshot = await api(`/api/accounts/plan-check-status?page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&archived=${encodeURIComponent(archived)}&plan=${encodeURIComponent(plan)}&q=${encodeURIComponent(q)}`);
+    ACTIVE_EXTRACT_LINK_TYPE = String(snapshot.extract_link_type || ACTIVE_EXTRACT_LINK_TYPE || 'upi').toLowerCase();
     const items = snapshot.items || [];
     const accountById = new Map(ACCOUNTS.map(r => [Number(r.id), r]));
     const hasUnknown = items.some(item => !accountById.has(Number(item.id)));
@@ -3144,9 +3354,12 @@ async function pollAccountPlanStatuses() {
         const isExtracting = ['queued', 'running'].includes(item.extract_link_status);
         const wasAgenting = ['queued', 'running'].includes(account?.codex_agent_status);
         const isAgenting = ['queued', 'running'].includes(item.codex_agent_status);
+        const wasCodexRetrying = account?.codex_status === 'retrying';
+        const isCodexRetrying = item.codex_status === 'retrying';
         if (wasChecking && !isChecking) needsFullReload = true;
         if (wasExtracting && !isExtracting) needsFullReload = true;
         if (wasAgenting && !isAgenting) needsFullReload = true;
+        if (wasCodexRetrying && !isCodexRetrying) needsFullReload = true;
         Object.assign(account, item);
       });
       planStatusRevision = snapshot.revision || '';
@@ -3295,6 +3508,42 @@ function _planAction(r) {
   }
   return `<button data-plan-check="${esc(r.id)}" title="查询当前套餐；free 账号会检查 Plus 试用资格">查套餐</button>`;
 }
+function _gcashEligibilityPassed(r) {
+  return String(r.gcash_eligibility_status || '') === 'success'
+    && r.gcash_eligibility_ok === true
+    && String(r.gcash_eligibility_outcome || '').toLowerCase() === 'eligible';
+}
+function _extractEligibility(r, linkType = ACTIVE_EXTRACT_LINK_TYPE) {
+  linkType = String(linkType || ACTIVE_EXTRACT_LINK_TYPE || 'upi').toLowerCase();
+  const plan = (r.current_plan_type || r.plan_type || '').toString().toLowerCase();
+  const plusTrial = plan === 'free' && !!r.plus_trial_eligible;
+  const gcash = linkType === 'gcash' && _gcashEligibilityPassed(r);
+  return { ok: plusTrial || gcash, plusTrial, gcash, linkType };
+}
+function _gcashEligibilityCell(r) {
+  const s = String(r.gcash_eligibility_status || '');
+  if (s === 'queued') return '<span class="pill status-running">GCash资格排队</span>';
+  if (s === 'running') return '<span class="pill status-running">GCash资格查询中</span>';
+  if (!s) return '';
+  const reason = r.gcash_eligibility_reason || r.gcash_eligibility_error || r.gcash_eligibility_message || '';
+  if (_gcashEligibilityPassed(r)) {
+    const checks = [
+      r.gcash_eligibility_valid === true ? 'Session有效' : '',
+      r.gcash_eligibility_payment_method_available === true ? 'GCash可用' : '',
+      r.gcash_eligibility_checkout_amount_is_zero === true ? '$0结账' : '',
+    ].filter(Boolean);
+    const detail = checks.join(' · ') || reason || '资格校验全部通过';
+    return `<div class="gcash-eligibility-cell" title="${esc(reason || r.gcash_eligibility_checked_at || detail)}"><span class="pill status-success">GCash资格：通过</span><div class="gcash-eligibility-detail">${esc(detail)}</div></div>`;
+  }
+  if (s === 'success' && !['eligible', 'ineligible'].includes(String(r.gcash_eligibility_outcome || '').toLowerCase())) return `<div class="extract-link-cell"><span class="pill status-failed" title="${esc(reason)}">GCash资格：需重试</span>${reason ? `<div class="extract-link-error" title="${esc(reason)}">${esc(reason)}</div>` : ''}</div>`;
+  if (s === 'success') return `<div class="extract-link-cell"><span class="pill status-used" title="${esc(reason)}">GCash资格：未通过</span>${reason ? `<div class="extract-link-error" title="${esc(reason)}">${esc(reason)}</div>` : ''}</div>`;
+  return `<div class="extract-link-cell"><span class="pill status-failed" title="${esc(reason)}">GCash资格：查询失败</span>${reason ? `<div class="extract-link-error" title="${esc(reason)}">${esc(reason)}</div>` : ''}</div>`;
+}
+function _gcashEligibilityAction(r) {
+  const s = String(r.gcash_eligibility_status || '');
+  if (s === 'queued' || s === 'running') return `<button data-gcash-eligibility="${esc(r.id)}" disabled title="GCash 资格查询正在执行">${s === 'queued' ? '资格查询排队中…' : '资格查询中…'}</button>`;
+  return `<button data-gcash-eligibility="${esc(r.id)}" title="查询该账号是否具备 GCash（PH/PHP）支付资格">查资格(GCash)</button>`;
+}
 function _fmtExtractExpire(v) {
   if (!v) return '';
   const raw = String(v).trim();
@@ -3332,11 +3581,12 @@ function _extractLinkCell(r) {
 function _extractLinkAction(r) {
   const s = r.extract_link_status || '';
   if (['queued','running'].includes(s)) return `<button disabled title="${esc(r.extract_link_message || '提链任务执行中')}">提链中…</button>`;
-  const plan = (r.current_plan_type || r.plan_type || '').toString().toLowerCase();
-  const eligible = plan === 'free' && !!r.plus_trial_eligible;
-  if (!eligible) return '';
+  const eligibility = _extractEligibility(r);
+  if (!eligibility.ok) return '';
   const failedReason = s === 'failed' ? (r.extract_link_error || r.extract_link_message || '') : '';
-  return `<button class="good" data-extract-link="${esc(r.id)}" title="${esc(failedReason ? '重新提链；上次失败原因：' + failedReason : '为该 free(可Plus试用) 账号创建 PIX/UPI/KAKAO_PAY/IDEAL 提链任务')}">提链</button>`;
+  const qualification = eligibility.gcash ? 'GCash资格已通过' : 'free(可Plus试用)';
+  const title = failedReason ? `重新提链；上次失败原因：${failedReason}` : `按 ${eligibility.linkType.toUpperCase()} 为该账号提链（${qualification}）`;
+  return `<button class="good" data-extract-link="${esc(r.id)}" data-link-type="${esc(eligibility.linkType)}" title="${esc(title)}">提链</button>`;
 }
 function _codexAction(r) {
   const s = r.codex_status || '';
@@ -3345,7 +3595,10 @@ function _codexAction(r) {
   }
   if (s === 'deactivated') return '';
   const label = s === 'success' ? '重新补跑 Codex' : '补跑 Codex';
-  return `<button data-codex-retry="${esc(r.email)}" title="重新跑一次 Codex 授权（会消耗 1 封邮箱 OTP + 1 个接码短信）">${label}</button>`;
+  const phoneHint = r.codex_phone_verified
+    ? '已记录接码成功；仅当 OpenAI 再次明确要求手机验证时才会取新号'
+    : '只在 OpenAI 明确要求手机验证时消耗接码短信';
+  return `<button data-codex-retry="${esc(r.email)}" title="重新跑一次 Codex 授权（邮箱 OTP 必需；${esc(phoneHint)}）">${label}</button>`;
 }
 function _tokenCellV2(r) {
   const live = r.live_check_status || '';
@@ -3370,6 +3623,7 @@ function _accountsV2MoreMenu(r) {
     `<button type="button" onclick="checkSelectedLive([Number('${esc(r.id)}')], this); return false;" title="重新登录该账号，成功则刷新最新 AT/accessToken">查活刷新AT</button>`,
     `<button type="button" data-account-live-log="${esc(r.email)}" title="查看该账号最近一次查活日志">查活日志</button>`,
     _planAction(r),
+    _gcashEligibilityAction(r),
     _extractLinkAction(r),
     _codexAction(r),
     `<button type="button" data-codex-log="${esc(r.email)}" title="查看该账号最近一次 Codex 补跑日志">补跑日志</button>`,
@@ -3412,7 +3666,7 @@ function renderAccounts() {
       </td>
       <td class="col-source">${esc(r.email_source || '-')}</td>
       <td class="col-token">${_tokenCellV2(r)}</td>
-      <td class="col-plan">${_planCell(r)}<div class="acc-v2-sub">${_extractLinkCell(r)}</div></td>
+      <td class="col-plan">${_planCell(r)}<div class="gcash-eligibility-slot">${_gcashEligibilityCell(r)}</div><div class="acc-v2-sub">${_extractLinkCell(r)}</div></td>
       <td class="col-note" title="${esc(r.note || '')}">${r.note ? esc(short(r.note, 80)) : '<span class="acc-v2-muted">-</span>'}</td>
       <td class="col-small">${r.totp_enabled ? '已启用' : '<span class="acc-v2-muted">未启用</span>'}</td>
       <td class="col-status">${_codexCellV2(r)}</td>
@@ -3576,6 +3830,12 @@ async function onAccountsBodyClick(e) {
     return;
   }
 
+  const gcashBtn = e.target.closest('[data-gcash-eligibility]');
+  if (gcashBtn) {
+    await checkOneGcashEligibility(Number(gcashBtn.dataset.gcashEligibility), gcashBtn);
+    return;
+  }
+
   const liveBtn = e.target.closest('[data-account-live-check]');
   if (liveBtn) {
     await checkSelectedLive([Number(liveBtn.dataset.accountLiveCheck)], liveBtn);
@@ -3684,7 +3944,11 @@ async function onAccountsBodyClick(e) {
   const btn = e.target.closest('[data-codex-retry]');
   if (!btn) return;
   const email = btn.dataset.codexRetry;
-  if (!confirm(`重新跑 Codex 授权？\n\n${email}\n\n将消耗：\n  • 1 封邮箱 OTP（自动收）\n  • 1 个接码短信（约 $0.13）\n\n补跑会在后台进行（~1-2 分钟），完成后状态自动更新。`)) return;
+  const account = ACCOUNTS.find(item => item.email === email);
+  const phoneLine = account?.codex_phone_verified
+    ? '  • 手机状态：已接码；OpenAI 未再次要求时直接跳过取号'
+    : '  • 接码短信：仅在 OpenAI 明确要求手机验证时消耗';
+  if (!confirm(`重新跑 Codex 授权？\n\n${email}\n\n预计消耗：\n  • 1 封邮箱 OTP（自动收）\n${phoneLine}\n\n拿到 callback 后会提交到当前配置的 CPA 平台。\n补跑会在后台进行（~1-2 分钟），完成后状态自动更新。`)) return;
   btn.disabled = true;
   try {
     const r = await api('/api/codex/retry', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email}) });
@@ -4064,15 +4328,34 @@ async function checkOnePlan(id, btn) {
   }
 }
 
+async function checkOneGcashEligibility(id, btn) {
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.textContent = '查询中…';
+  try {
+    const r = await api('/api/accounts/check-gcash-eligibility', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({account_id: id}),
+    });
+    showToast(r.message || 'GCash 资格查询已加入后台队列');
+    await pollAccountPlanStatuses();
+  } catch (err) {
+    showToast(err.message);
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
 async function extractOneLink(id, btn) {
   const acc = ACCOUNTS.find(a => Number(a.id) === Number(id));
   if (!acc) { showToast('账号不存在'); return; }
-  const plan = (acc.current_plan_type || acc.plan_type || '').toString().toLowerCase();
-  if (plan !== 'free' || !acc.plus_trial_eligible) {
-    showToast('仅支持 free(可Plus试用) 账号提链');
+  const eligibility = _extractEligibility(acc, btn?.dataset?.linkType || ACTIVE_EXTRACT_LINK_TYPE);
+  if (!eligibility.ok) {
+    showToast(eligibility.linkType === 'gcash' ? '请先确认账号通过 GCash 资格查询' : '仅支持 free(可Plus试用) 账号提链');
     return;
   }
-  if (!confirm(`确定为该账号提链吗？\n\n${acc.email || ('#' + id)}\n\n提链类型按配置使用 PIX/UPI/KAKAO_PAY/IDEAL，成功会消耗 1 次 CDK。`)) return;
+  if (!confirm(`确定为该账号提链吗？\n\n${acc.email || ('#' + id)}\n\n提链类型：${eligibility.linkType.toUpperCase()}，成功会消耗 1 次 CDK。`)) return;
   const old = btn.textContent;
   btn.disabled = true;
   btn.textContent = '提链中…';
@@ -4080,7 +4363,7 @@ async function extractOneLink(id, btn) {
     await api('/api/accounts/extract-link', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_id: id}),
+      body: JSON.stringify({account_id: id, link_type: eligibility.linkType}),
     });
     showToast('提链任务已入队');
     await pollAccountPlanStatuses();
@@ -4095,9 +4378,10 @@ async function extractSelectedLinks() {
   const ids = Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
   const selected = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
-  const eligible = selected.filter(a => (a.current_plan_type || a.plan_type || '').toString().toLowerCase() === 'free' && !!a.plus_trial_eligible);
-  if (!eligible.length) { showToast('选中账号里没有 free(可Plus试用)'); return; }
-  if (!confirm(`确定批量提链 ${eligible.length} 个 free(可Plus试用) 账号吗？\n\n非可试用账号会自动跳过。成功会按账号消耗 CDK 次数。`)) return;
+  const linkType = ACTIVE_EXTRACT_LINK_TYPE;
+  const eligible = selected.filter(a => _extractEligibility(a, linkType).ok);
+  if (!eligible.length) { showToast(linkType === 'gcash' ? '选中账号里没有通过 GCash 资格的账号' : '选中账号里没有 free(可Plus试用)'); return; }
+  if (!confirm(`确定批量提链 ${eligible.length} 个符合 ${linkType.toUpperCase()} 资格的账号吗？\n\n不符合当前提链资格的账号会自动跳过。成功会按账号消耗 CDK 次数。`)) return;
   const btn = $('#btnExtractSelectedLinksV2');
   const old = btn.textContent;
   btn.disabled = true;
@@ -4106,7 +4390,7 @@ async function extractSelectedLinks() {
     const r = await api('/api/accounts/extract-link-bulk', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids}),
+      body: JSON.stringify({account_ids: ids, link_type: linkType}),
     });
     const skipped = (r.skipped_count || 0) + (r.busy_count || 0) + (r.failed_count || 0);
     showToast(skipped ? `已入队 ${r.started_count || 0} 个，跳过/失败 ${skipped} 个` : `已入队 ${r.started_count || 0} 个`);
@@ -5388,6 +5672,16 @@ let CONFIG_EMAIL_ACTIVE_SECTION_V2 = '通用邮箱 / OTP';
 let CONFIG_SMS_ACTIVE_SECTION_V2 = '通用接码';
 let CONFIG_CODEX_ACTIVE_SECTION_V2 = '基础配置';
 const CONFIG_PENDING_UPDATES = {};
+const HERO_SMS_STATE = {
+  countries: [],
+  services: [],
+  prices: null,
+  balance: '',
+  quoteAt: '',
+  status: '',
+  statusKind: '',
+  busy: '',
+};
 
 function configGroups() {
   const groups = {};
@@ -5409,10 +5703,11 @@ function emailConfigSectionForKey(key) {
 }
 
 function smsConfigSectionForKey(key) {
-  if (['SMS_PROVIDER','SMS_COUNTRY','SMS_SERVICE','SMS_MAX_RETRIES','SMS_CODE_WAIT'].includes(key)) {
-    return ['通用接码', '接码通道选择、国家/服务代码、等待和重试参数；H 通道可复用 SMS_SERVICE/SMS_COUNTRY 作为 projectId/country'];
+  if (['SMS_PROVIDER','SMS_COUNTRY','SMS_SERVICE','SMS_MAX_PRICE','SMS_MAX_RETRIES','SMS_CODE_WAIT','SMS_POLL_INTERVAL','SMS_REQUEST_TIMEOUT','SMS_API_BASE'].includes(key)) {
+    return ['通用接码', '选择接码通道，并设置通用国家、服务、等待和重试参数'];
   }
   if (key === 'SMS_API_KEY') return ['GrizzlySMS', 'GrizzlySMS 平台 API Key 配置'];
+  if (key.startsWith('HERO_SMS_')) return ['HeroSMS', '先加载实时目录和库存，再锁定国家、服务与单号价格上限'];
   if (key.startsWith('H_')) return ['H 接码', 'H_API.md 本地 H 取号服务配置；项目ID/国家留空时复用通用字段'];
   if (key.startsWith('L_')) return ['L 接码', 'L_API.md 本地 L 取号服务配置'];
   return ['其他接码配置', ''];
@@ -5676,7 +5971,28 @@ function renderFeatureSwitchField(f, opts = {}) {
     </div>
   `;
 }
+function renderSmsProviderFieldV2(f) {
+  const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
+  const current = String(fv || 'grizzly').trim().toLowerCase();
+  const choices = [
+    ['grizzly', 'GrizzlySMS'],
+    ['hero', 'HeroSMS'],
+    ['l', 'L 本地服务'],
+    ['h', 'H 本地服务'],
+  ];
+  if (current && !choices.some(([value]) => value === current)) choices.push([current, current]);
+  return `
+    <label class="fld config-select-v2-field">
+      ${esc(f.label)}
+      <span class="hint">${esc(f.help || '')}</span>
+      <select data-key="${attrEsc(f.key)}">
+        ${choices.map(([value, label]) => `<option value="${attrEsc(value)}"${value === current ? ' selected' : ''}>${esc(label)}</option>`).join('')}
+      </select>
+    </label>
+  `;
+}
 function renderConfigPlainFieldV2(f) {
+  if (f.key === 'SMS_PROVIDER') return renderSmsProviderFieldV2(f);
   const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
   let control = '';
   if (f.type === 'int') {
@@ -5697,6 +6013,224 @@ function renderConfigPlainFieldV2(f) {
       <span class="hint">${esc(f.help || '')}</span>
       ${control}
     </label>
+  `;
+}
+
+function heroConfigField(key) {
+  return (CONFIG || []).find(f => f.key === key) || null;
+}
+function heroConfigValue(key, fallback = '') {
+  if (Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, key)) return CONFIG_PENDING_UPDATES[key];
+  const field = heroConfigField(key);
+  return field && field.value != null ? field.value : fallback;
+}
+function heroBool(value) {
+  if (typeof value === 'boolean') return value;
+  return ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
+}
+function heroCollectPriceItems(value, out = []) {
+  if (Array.isArray(value)) {
+    value.forEach(item => heroCollectPriceItems(item, out));
+    return out;
+  }
+  if (!value || typeof value !== 'object') return out;
+  if (Number.isFinite(Number(value.cost))) {
+    out.push({
+      cost: Number(value.cost),
+      count: Number(value.count || 0),
+      physicalCount: Number(value.physicalCount || value.physical_count || 0),
+    });
+    return out;
+  }
+  Object.values(value).forEach(item => heroCollectPriceItems(item, out));
+  return out;
+}
+function heroBestQuote() {
+  const items = heroCollectPriceItems(HERO_SMS_STATE.prices, []);
+  const available = items.filter(item => Number.isFinite(item.cost) && item.count > 0);
+  const pool = available.length ? available : items.filter(item => Number.isFinite(item.cost));
+  pool.sort((a, b) => a.cost - b.cost);
+  return pool[0] || null;
+}
+function heroRecommendedCap(cost, bufferPercent) {
+  const value = Number(cost);
+  const buffer = Math.max(0, Number(bufferPercent || 0));
+  if (!Number.isFinite(value) || value <= 0) return '';
+  return String(Math.ceil(value * (1 + buffer / 100) * 10000) / 10000);
+}
+function heroCountryLabel(item) {
+  const id = String(item.id == null ? '' : item.id);
+  const primary = String(item.chn || item.eng || item.rus || `国家 ${id}`);
+  const english = String(item.eng || '').trim();
+  return `${primary}${english && english !== primary ? ` / ${english}` : ''} · ID ${id}`;
+}
+function heroServiceLabel(item) {
+  const code = String(item.code || '').trim();
+  const name = String(item.name || code || '未命名服务').trim();
+  return `${name}${code ? ` (${code})` : ''}`;
+}
+function renderHeroSmsWorkbenchV2() {
+  const apiBase = String(heroConfigValue('HERO_SMS_API_BASE', 'https://hero-sms.com/stubs/handler_api.php') || '');
+  const apiKey = String(heroConfigValue('HERO_SMS_API_KEY', '') || '');
+  const keyField = heroConfigField('HERO_SMS_API_KEY');
+  const keyConfigured = !!(keyField && keyField.configured);
+  const activeProvider = String(heroConfigValue('SMS_PROVIDER', 'grizzly') || 'grizzly').trim().toLowerCase();
+  const country = String(heroConfigValue('HERO_SMS_COUNTRY', '') || '');
+  const service = String(heroConfigValue('HERO_SMS_SERVICE', '') || '');
+  const priceMode = String(heroConfigValue('HERO_SMS_PRICE_MODE', 'quote_buffer') || 'quote_buffer');
+  const bufferPercent = Number(heroConfigValue('HERO_SMS_PRICE_BUFFER_PERCENT', 15) || 15);
+  const maxPrice = String(heroConfigValue('HERO_SMS_MAX_PRICE', '') || '');
+  const fixedPrice = heroBool(heroConfigValue('HERO_SMS_FIXED_PRICE', false));
+  const operator = String(heroConfigValue('HERO_SMS_OPERATOR', '') || '');
+  const phoneException = String(heroConfigValue('HERO_SMS_PHONE_EXCEPTION', '') || '');
+  const quote = heroBestQuote();
+  const countries = Array.isArray(HERO_SMS_STATE.countries) ? HERO_SMS_STATE.countries : [];
+  const services = Array.isArray(HERO_SMS_STATE.services) ? HERO_SMS_STATE.services : [];
+  const countryKnown = countries.some(item => String(item.id) === country);
+  const serviceKnown = services.some(item => String(item.code || '') === service);
+  const recommended = quote ? heroRecommendedCap(quote.cost, bufferPercent) : '';
+  const shownCap = priceMode === 'quote_buffer' ? (maxPrice || recommended) : maxPrice;
+  const statusText = HERO_SMS_STATE.status || (
+    keyConfigured || apiKey
+      ? '密钥已就绪。加载实时目录后选择国家和服务。'
+      : '先填写 HeroSMS API Key，再测试余额或加载目录。'
+  );
+  const statusClass = HERO_SMS_STATE.statusKind ? ` is-${HERO_SMS_STATE.statusKind}` : '';
+  const busy = !!HERO_SMS_STATE.busy;
+  const quoteTime = HERO_SMS_STATE.quoteAt ? `最近更新 ${HERO_SMS_STATE.quoteAt}` : '选择服务后读取实时库存';
+  return `
+    <div class="hero-sms-workbench">
+      <div class="hero-sms-connection">
+        <div class="hero-sms-connection-fields">
+          <label class="hero-sms-field">
+            API 地址
+            <small>使用 HeroSMS 的 SMS-Activate 兼容接口</small>
+            <input type="text" data-key="HERO_SMS_API_BASE" value="${attrEsc(apiBase)}" autocomplete="off" spellcheck="false">
+          </label>
+          <label class="hero-sms-field">
+            API Key
+            <small>${keyConfigured && !apiKey ? '已保存在 .env；留空不会覆盖' : '仅保存到本机 .env，不写入任务记录'}</small>
+            <input type="password" data-key="HERO_SMS_API_KEY" value="${attrEsc(apiKey)}" placeholder="${keyConfigured ? '已配置，输入新值可替换' : '输入 HeroSMS API Key'}" autocomplete="new-password" spellcheck="false">
+          </label>
+        </div>
+        <div>
+          <div class="hero-sms-actions">
+            ${activeProvider === 'hero' ? '' : '<button class="btn" type="button" id="btnUseHeroSmsV2">设为当前接码通道</button>'}
+            <button class="btn" type="button" id="btnHeroSmsBalanceV2"${busy ? ' disabled' : ''}>测试余额</button>
+            <button class="btn hero-primary" type="button" id="btnHeroSmsCatalogV2"${busy ? ' disabled' : ''}>加载国家与服务</button>
+          </div>
+          <div class="hero-sms-balance">${activeProvider === 'hero' ? '当前通道 · HeroSMS' : `当前通道 · ${esc(activeProvider)}`}<strong>${esc(HERO_SMS_STATE.balance || '—')}</strong></div>
+        </div>
+      </div>
+
+      <div class="hero-sms-status${statusClass}" role="status" aria-live="polite">
+        <span class="hero-sms-status-dot" aria-hidden="true"></span>
+        <span>${esc(statusText)}</span>
+      </div>
+
+      <div class="hero-sms-rail" aria-label="HeroSMS 取号配置流程">
+        <div class="hero-sms-step${country ? ' is-complete' : ''}">
+          <span class="hero-sms-step-marker" aria-hidden="true">1</span>
+          <div class="hero-sms-step-body">
+            <div class="hero-sms-step-title">选择接码国家</div>
+            <p class="hero-sms-step-copy">国家使用 Hero ID，不按电话区号猜测。</p>
+            <select id="heroSmsCountryV2" data-key="HERO_SMS_COUNTRY" aria-label="HeroSMS 接码国家"${!countries.length ? ' disabled' : ''}>
+              <option value="">${countries.length ? '请选择国家' : '请先加载国家列表'}</option>
+              ${country && !countryKnown ? `<option value="${attrEsc(country)}" selected>当前配置 · ID ${esc(country)}</option>` : ''}
+              ${countries.map(item => {
+                const id = String(item.id == null ? '' : item.id);
+                return `<option value="${attrEsc(id)}"${id === country ? ' selected' : ''}>${esc(heroCountryLabel(item))}</option>`;
+              }).join('')}
+            </select>
+          </div>
+        </div>
+
+        <div class="hero-sms-step${service ? ' is-complete' : ''}">
+          <span class="hero-sms-step-marker" aria-hidden="true">2</span>
+          <div class="hero-sms-step-body">
+            <div class="hero-sms-step-title">选择目标服务</div>
+            <p class="hero-sms-step-copy">服务代码来自 Hero 实时目录，不硬编码名称。</p>
+            <select id="heroSmsServiceV2" data-key="HERO_SMS_SERVICE" aria-label="HeroSMS 目标服务"${!country || !services.length ? ' disabled' : ''}>
+              <option value="">${country ? (services.length ? '请选择服务' : '该国家尚未加载服务') : '请先选择国家'}</option>
+              ${service && !serviceKnown ? `<option value="${attrEsc(service)}" selected>当前配置 (${esc(service)})</option>` : ''}
+              ${services.map(item => {
+                const code = String(item.code || '');
+                return `<option value="${attrEsc(code)}"${code === service ? ' selected' : ''}>${esc(heroServiceLabel(item))}</option>`;
+              }).join('')}
+            </select>
+          </div>
+        </div>
+
+        <div class="hero-sms-step${quote ? ' is-complete' : ''}">
+          <span class="hero-sms-step-marker" aria-hidden="true">3</span>
+          <div class="hero-sms-step-body">
+            <div class="hero-sms-step-title">核对实时库存</div>
+            <p class="hero-sms-step-copy">${esc(quoteTime)}</p>
+            <div class="hero-sms-quote" aria-label="HeroSMS 当前报价">
+              <div class="hero-sms-metric"><span>当前价格</span><strong>${quote ? esc(String(quote.cost)) : '—'}</strong></div>
+              <div class="hero-sms-metric"><span>可用数量</span><strong>${quote ? esc(String(quote.count)) : '—'}</strong></div>
+              <div class="hero-sms-metric"><span>实体库存</span><strong>${quote ? esc(String(quote.physicalCount)) : '—'}</strong></div>
+            </div>
+            <div class="hero-sms-actions" style="margin-top:10px;">
+              <button class="btn" type="button" id="btnHeroSmsQuoteV2"${!country || !service || busy ? ' disabled' : ''}>刷新报价</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="hero-sms-price-panel">
+        <div class="hero-sms-price-head">
+          <div>
+            <h4>锁定单号成本</h4>
+            <p>价格变化时绝不自动突破保存的上限。</p>
+          </div>
+          <div class="hero-sms-price-mode" role="group" aria-label="HeroSMS 价格模式">
+            <button type="button" data-hero-price-mode="quote_buffer" class="${priceMode === 'quote_buffer' ? 'is-active' : ''}">实时推荐 +${esc(String(bufferPercent))}%</button>
+            <button type="button" data-hero-price-mode="custom" class="${priceMode === 'custom' ? 'is-active' : ''}">自定义上限</button>
+            <button type="button" data-hero-price-mode="unlimited" class="${priceMode === 'unlimited' ? 'is-active' : ''}">不限价</button>
+            <input type="hidden" data-key="HERO_SMS_PRICE_MODE" value="${attrEsc(priceMode)}">
+          </div>
+        </div>
+        <div class="hero-sms-price-grid">
+          <label class="hero-sms-field">
+            最高价格
+            <small>${priceMode === 'quote_buffer' ? (quote ? `报价 ${quote.cost} 加 ${bufferPercent}% 后锁定` : '查询报价后自动计算并保存') : priceMode === 'unlimited' ? '取号时不传 maxPrice，成本不受保护' : '超过该价格时 Hero 不会购买'}</small>
+            <input id="heroSmsMaxPriceV2" type="number" min="0" step="0.0001" data-key="HERO_SMS_MAX_PRICE" value="${attrEsc(priceMode === 'unlimited' ? '' : shownCap)}"${priceMode === 'quote_buffer' ? ' readonly' : ''}${priceMode === 'unlimited' ? ' disabled' : ''} placeholder="例如 0.25">
+          </label>
+          <div class="hero-sms-fixed-toggle">
+            <div>
+              <b>严格固定价格</b>
+              <small>开启后 Hero 只按 maxPrice 指定价格购买</small>
+            </div>
+            <input class="config-switch-v2-toggle" type="checkbox" role="switch" data-key="HERO_SMS_FIXED_PRICE"${fixedPrice ? ' checked' : ''}${priceMode === 'unlimited' ? ' disabled' : ''} aria-label="严格固定价格">
+          </div>
+        </div>
+
+        <details class="hero-sms-advanced">
+          <summary>高级取号条件</summary>
+          <div class="hero-sms-advanced-fields">
+            <label class="hero-sms-field">
+              推荐价余量 (%)
+              <small>仅用于“实时推荐”模式</small>
+              <input type="number" min="0" max="200" step="1" data-key="HERO_SMS_PRICE_BUFFER_PERCENT" value="${attrEsc(String(bufferPercent))}">
+            </label>
+            <label class="hero-sms-field">
+              运营商
+              <small>多个值用英文逗号分隔，不加空格</small>
+              <input type="text" data-key="HERO_SMS_OPERATOR" value="${attrEsc(operator)}" placeholder="例如 globe,smart" autocomplete="off" spellcheck="false">
+            </label>
+            <label class="hero-sms-field">
+              排除号段
+              <small>英文逗号分隔，最多 20 个前缀</small>
+              <input type="text" data-key="HERO_SMS_PHONE_EXCEPTION" value="${attrEsc(phoneException)}" placeholder="例如 63917,63918" autocomplete="off" spellcheck="false">
+            </label>
+          </div>
+        </details>
+        <div class="config-section-v2-actions">
+          <button type="button" class="btn primary" data-save-config-v2>保存 HeroSMS 配置</button>
+        </div>
+      </div>
+    </div>
   `;
 }
 function renderMixedConfigSectionV2(name, fields, intro) {
@@ -5784,6 +6318,7 @@ function renderSectionedConfigSectionV2(name, fields, sectionForKey, preferred, 
     activeRef.set(active);
   }
   const current = bySection[active] || { help: '', fields: [] };
+  const isHeroSms = name === '接码平台' && active === 'HeroSMS';
   const switches = current.fields.filter(f => f.type === 'bool');
   const inputs = current.fields.filter(f => f.type !== 'bool');
   let extra = '';
@@ -5801,12 +6336,14 @@ function renderSectionedConfigSectionV2(name, fields, sectionForKey, preferred, 
         `).join('')}
       </div>
       ${current.help ? `<p class="config-section-v2-subhelp">${esc(current.help)}</p>` : ''}
-      ${switches.length ? `<div class="config-switches-v2">${switches.map(f => renderFeatureSwitchField(f, { withIcon: false })).join('')}</div>` : ''}
-      ${inputs.length ? `<div class="config-section-v2-body">${inputs.map(renderConfigPlainFieldV2).join('')}</div>` : ''}
+      ${isHeroSms ? renderHeroSmsWorkbenchV2() : `
+        ${switches.length ? `<div class="config-switches-v2">${switches.map(f => renderFeatureSwitchField(f, { withIcon: false })).join('')}</div>` : ''}
+        ${inputs.length ? `<div class="config-section-v2-body">${inputs.map(renderConfigPlainFieldV2).join('')}</div>` : ''}
+      `}
       ${extra}
-      <div class="config-section-v2-actions">
+      ${isHeroSms ? '' : `<div class="config-section-v2-actions">
         <button type="button" class="btn primary" data-save-config-v2>保存</button>
-      </div>
+      </div>`}
     </section>
   `;
 }
@@ -5844,6 +6381,215 @@ function _configValueV2(key) {
   if (root) return root.value;
   const f = CONFIG.find(x => x.key === key);
   return f ? String(f.value ?? '') : '';
+}
+function heroSetPendingValue(key, value) {
+  CONFIG_PENDING_UPDATES[key] = value;
+}
+function heroRequestBody(extra = {}) {
+  const body = {
+    api_base: String(_configValueV2('HERO_SMS_API_BASE') || '').trim(),
+    api_key: String(_configValueV2('HERO_SMS_API_KEY') || '').trim(),
+    timeout: Number(_configValueV2('SMS_REQUEST_TIMEOUT') || 30),
+    ...extra,
+  };
+  if (!body.api_key) delete body.api_key;
+  if (!body.api_base) delete body.api_base;
+  return body;
+}
+function heroRenderWorkbench() {
+  renderConfigLayoutV2();
+  bindConfigLayoutV2();
+}
+function heroSetStatus(message, kind = '') {
+  HERO_SMS_STATE.status = String(message || '');
+  HERO_SMS_STATE.statusKind = kind;
+}
+function heroFormatError(error) {
+  const text = String(error && error.message ? error.message : error || '请求失败');
+  return text.replace(/api[_-]?key\s*[=:]\s*[^\s,;]+/ig, 'api_key=[已隐藏]');
+}
+function heroPriceFromResponse(response) {
+  return response && Object.prototype.hasOwnProperty.call(response, 'prices') ? response.prices : response;
+}
+function heroServicesFromResponse(response) {
+  const values = response && Array.isArray(response.services) ? response.services : response;
+  return Array.isArray(values) ? values : [];
+}
+function heroCountriesFromResponse(response) {
+  const values = response && Array.isArray(response.countries) ? response.countries : response;
+  return Array.isArray(values) ? values.filter(item => Number(item && item.visible) !== 0) : [];
+}
+async function loadHeroSmsBalanceV2() {
+  if (HERO_SMS_STATE.busy) return;
+  HERO_SMS_STATE.busy = 'balance';
+  heroSetStatus('正在向 HeroSMS 查询账户余额…', 'loading');
+  heroRenderWorkbench();
+  try {
+    const response = await api('/api/sms/hero/balance', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(heroRequestBody()),
+    });
+    HERO_SMS_STATE.balance = response.balance == null ? '—' : String(response.balance);
+    heroSetStatus('连接正常。余额查询不会购买号码。', 'ready');
+  } catch (error) {
+    heroSetStatus(`余额查询失败：${heroFormatError(error)}`, 'error');
+  } finally {
+    HERO_SMS_STATE.busy = '';
+    heroRenderWorkbench();
+  }
+}
+async function loadHeroSmsServicesV2(country, { silent = false } = {}) {
+  const selectedCountry = String(country || '').trim();
+  if (!silent) {
+    HERO_SMS_STATE.busy = 'services';
+    heroSetStatus(selectedCountry ? '正在读取该国家的服务目录…' : '正在读取 HeroSMS 服务目录…', 'loading');
+    heroRenderWorkbench();
+  }
+  try {
+    const response = await api('/api/sms/hero/services', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(heroRequestBody({country: selectedCountry || undefined, lang: 'cn'})),
+    });
+    HERO_SMS_STATE.services = heroServicesFromResponse(response);
+    const currentService = String(heroConfigValue('HERO_SMS_SERVICE', '') || '').trim();
+    const hasCurrent = HERO_SMS_STATE.services.some(item => String(item.code || '') === currentService);
+    if (selectedCountry && !hasCurrent && HERO_SMS_STATE.services.some(item => String(item.code || '') === 'dr')) {
+      heroSetPendingValue('HERO_SMS_SERVICE', 'dr');
+    }
+    if (!silent) heroSetStatus(`${HERO_SMS_STATE.services.length} 个服务可选。`, 'ready');
+    return HERO_SMS_STATE.services;
+  } catch (error) {
+    if (!silent) heroSetStatus(`服务目录加载失败：${heroFormatError(error)}`, 'error');
+    return [];
+  } finally {
+    if (!silent) {
+      HERO_SMS_STATE.busy = '';
+      heroRenderWorkbench();
+    }
+  }
+}
+async function loadHeroSmsCatalogV2() {
+  if (HERO_SMS_STATE.busy) return;
+  HERO_SMS_STATE.busy = 'catalog';
+  heroSetStatus('正在读取国家、服务和账户状态…', 'loading');
+  heroRenderWorkbench();
+  try {
+    const body = heroRequestBody();
+    const countryResponse = await api('/api/sms/hero/countries', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+    });
+    HERO_SMS_STATE.countries = heroCountriesFromResponse(countryResponse);
+    const selectedCountry = String(heroConfigValue('HERO_SMS_COUNTRY', '') || '').trim();
+    await loadHeroSmsServicesV2(selectedCountry, {silent: true});
+    try {
+      const balanceResponse = await api('/api/sms/hero/balance', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+      });
+      HERO_SMS_STATE.balance = balanceResponse.balance == null ? '—' : String(balanceResponse.balance);
+    } catch (_) {
+      HERO_SMS_STATE.balance = '不可用';
+    }
+    heroSetStatus(`已加载 ${HERO_SMS_STATE.countries.length} 个国家、${HERO_SMS_STATE.services.length} 个服务。`, 'ready');
+  } catch (error) {
+    heroSetStatus(`目录加载失败：${heroFormatError(error)}`, 'error');
+  } finally {
+    HERO_SMS_STATE.busy = '';
+    heroRenderWorkbench();
+  }
+}
+async function loadHeroSmsQuoteV2() {
+  const country = String(heroConfigValue('HERO_SMS_COUNTRY', '') || '').trim();
+  const service = String(heroConfigValue('HERO_SMS_SERVICE', '') || '').trim();
+  if (!country || !service || HERO_SMS_STATE.busy) return;
+  HERO_SMS_STATE.busy = 'quote';
+  heroSetStatus('正在查询当前价格和库存…', 'loading');
+  heroRenderWorkbench();
+  try {
+    const response = await api('/api/sms/hero/prices', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(heroRequestBody({country, service})),
+    });
+    HERO_SMS_STATE.prices = heroPriceFromResponse(response);
+    HERO_SMS_STATE.quoteAt = new Date().toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+    const quote = heroBestQuote();
+    const mode = String(heroConfigValue('HERO_SMS_PRICE_MODE', 'quote_buffer') || 'quote_buffer');
+    if (quote && mode === 'quote_buffer') {
+      const cap = heroRecommendedCap(quote.cost, heroConfigValue('HERO_SMS_PRICE_BUFFER_PERCENT', 15));
+      if (cap) heroSetPendingValue('HERO_SMS_MAX_PRICE', cap);
+    }
+    heroSetStatus(quote ? `报价已更新，当前最低可用价格为 ${quote.cost}。` : '该国家/服务当前没有可用库存。', quote ? 'ready' : 'error');
+  } catch (error) {
+    HERO_SMS_STATE.prices = null;
+    heroSetStatus(`报价查询失败：${heroFormatError(error)}`, 'error');
+  } finally {
+    HERO_SMS_STATE.busy = '';
+    heroRenderWorkbench();
+  }
+}
+function setHeroSmsPriceModeV2(mode) {
+  const value = ['quote_buffer', 'custom', 'unlimited'].includes(mode) ? mode : 'quote_buffer';
+  if (value === 'unlimited' && String(heroConfigValue('HERO_SMS_PRICE_MODE', 'quote_buffer')) !== 'unlimited') {
+    if (!window.confirm('不限价会移除单号成本保护。确定继续吗？')) return;
+  }
+  heroSetPendingValue('HERO_SMS_PRICE_MODE', value);
+  if (value === 'unlimited') {
+    heroSetPendingValue('HERO_SMS_MAX_PRICE', '');
+    heroSetPendingValue('HERO_SMS_FIXED_PRICE', false);
+  } else if (value === 'quote_buffer') {
+    const quote = heroBestQuote();
+    const cap = quote ? heroRecommendedCap(quote.cost, heroConfigValue('HERO_SMS_PRICE_BUFFER_PERCENT', 15)) : '';
+    if (cap) heroSetPendingValue('HERO_SMS_MAX_PRICE', cap);
+  }
+  heroRenderWorkbench();
+}
+function bindHeroSmsToolsV2() {
+  const root = document.querySelector('.hero-sms-workbench');
+  if (!root || root.dataset.bound) return;
+  root.dataset.bound = '1';
+  const balanceButton = root.querySelector('#btnHeroSmsBalanceV2');
+  const catalogButton = root.querySelector('#btnHeroSmsCatalogV2');
+  const quoteButton = root.querySelector('#btnHeroSmsQuoteV2');
+  const useHeroButton = root.querySelector('#btnUseHeroSmsV2');
+  if (useHeroButton) useHeroButton.addEventListener('click', () => {
+    heroSetPendingValue('SMS_PROVIDER', 'hero');
+    heroSetStatus('已选择 HeroSMS。保存配置后，新提交任务将使用该通道。', 'ready');
+    heroRenderWorkbench();
+  });
+  if (balanceButton) balanceButton.addEventListener('click', loadHeroSmsBalanceV2);
+  if (catalogButton) catalogButton.addEventListener('click', loadHeroSmsCatalogV2);
+  if (quoteButton) quoteButton.addEventListener('click', loadHeroSmsQuoteV2);
+  const countrySelect = root.querySelector('#heroSmsCountryV2');
+  if (countrySelect) countrySelect.addEventListener('change', async event => {
+    const country = String(event.target.value || '').trim();
+    heroSetPendingValue('HERO_SMS_COUNTRY', country);
+    heroSetPendingValue('HERO_SMS_SERVICE', '');
+    HERO_SMS_STATE.services = [];
+    HERO_SMS_STATE.prices = null;
+    heroRenderWorkbench();
+    await loadHeroSmsServicesV2(country);
+    if (String(heroConfigValue('HERO_SMS_SERVICE', '') || '').trim()) {
+      await loadHeroSmsQuoteV2();
+    }
+  });
+  const serviceSelect = root.querySelector('#heroSmsServiceV2');
+  if (serviceSelect) serviceSelect.addEventListener('change', async event => {
+    heroSetPendingValue('HERO_SMS_SERVICE', String(event.target.value || '').trim());
+    HERO_SMS_STATE.prices = null;
+    heroRenderWorkbench();
+    await loadHeroSmsQuoteV2();
+  });
+  root.querySelectorAll('[data-hero-price-mode]').forEach(button => {
+    button.addEventListener('click', () => setHeroSmsPriceModeV2(button.dataset.heroPriceMode));
+  });
+  const bufferInput = root.querySelector('[data-key="HERO_SMS_PRICE_BUFFER_PERCENT"]');
+  if (bufferInput) bufferInput.addEventListener('change', () => {
+    if (String(heroConfigValue('HERO_SMS_PRICE_MODE', 'quote_buffer')) === 'quote_buffer') {
+      const quote = heroBestQuote();
+      const cap = quote ? heroRecommendedCap(quote.cost, bufferInput.value) : '';
+      if (cap) heroSetPendingValue('HERO_SMS_MAX_PRICE', cap);
+      heroRenderWorkbench();
+    }
+  });
 }
 async function genCloudMailTokenV2() {
   const btn = $('#btnGenCloudMailTokenV2');
@@ -6007,7 +6753,7 @@ function renderConfigSectionV2(name, fields) {
       name,
       fields,
       smsConfigSectionForKey,
-      ['通用接码', 'GrizzlySMS', 'H 接码', 'L 接码', '其他接码配置'],
+      ['通用接码', 'HeroSMS', 'GrizzlySMS', 'H 接码', 'L 接码', '其他接码配置'],
       { get: () => CONFIG_SMS_ACTIVE_SECTION_V2, set: v => { CONFIG_SMS_ACTIVE_SECTION_V2 = v; } },
       'sms-section-v2'
     );
@@ -6037,6 +6783,7 @@ function renderConfigLayoutV2() {
   if (sectionMount) renderRegistrationEpSelect(sectionMount, 'configRegistrationSelectV2');
   bindRoxyWorkspaceToolsV2();
   bindCloudMailToolsV2();
+  bindHeroSmsToolsV2();
 }
 function scrollToConfigSection(slug) {
   const el = document.getElementById(slug);
@@ -6221,18 +6968,25 @@ $('#tab-config').addEventListener('change', trackConfigFieldChange);
 
 async function saveConfigUpdates(triggerBtn) {
   const updates = {...CONFIG_PENDING_UPDATES};
-  const seen = new Set();
-  $$('#configCardsV2 [data-key], #configSectionsV2 [data-key]').forEach(el => {
-    const f = CONFIG.find(x => x.key === el.dataset.key);
-    if (!f || seen.has(f.key)) return;
-    seen.add(f.key);
-    updates[f.key] = readConfigElementValue(el, f);
-  });
+  if (!Object.keys(updates).length) { showToast('没有需要保存的配置修改'); return; }
   const buttons = [triggerBtn, ...$$('#tab-config [data-save-config-v2]')].filter(Boolean);
   buttons.forEach(btn => { btn.disabled = true; });
   try {
-    const r = await api('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({updates}) });
-    for (const [k, v] of Object.entries(updates)) { const f = CONFIG.find(x => x.key === k); if (f) f.value = v; delete CONFIG_PENDING_UPDATES[k]; }
+    const body = {updates};
+    if (Object.prototype.hasOwnProperty.call(updates, 'PROXY_POOL')) body.proxy_pool_revision = CONFIG.find(x => x.key === 'PROXY_POOL')?.revision || '';
+    const r = await api('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    for (const [k, v] of Object.entries(updates)) {
+      const f = CONFIG.find(x => x.key === k);
+      if (f) {
+        if (f.write_only) {
+          f.value = '';
+          if (String(v || '').trim()) f.configured = true;
+        } else {
+          f.value = v;
+        }
+      }
+      delete CONFIG_PENDING_UPDATES[k];
+    }
     renderConfigLayoutV2();
     showToast(r.reloaded ? '配置已生效' : '配置已保存（需重启）');
   } catch(e) { showToast('保存失败: ' + e.message); }

@@ -183,6 +183,10 @@ def run_registration(
     #   browser_use  = Browser Use Cloud stealth Chromium + Playwright
     #   skyvern      = Skyvern Browser Sessions + Playwright
     driver_mode = str(getattr(_roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
+    local_proxy_driver = driver_mode in ("protocol", "api", "http", "roxy", "roxybrowser", "fingerprint", "browser", "cloak", "cloakbrowser")
+    if local_proxy_driver and proxy is None:
+        from config.proxy import take_registration_proxy
+        proxy = take_registration_proxy()
     if driver_mode in ("roxy", "roxybrowser", "fingerprint", "browser"):
         from core.roxy_registration import run_roxy_registration
         return run_roxy_registration(
@@ -458,7 +462,7 @@ def run_registration(
         codex_result = {"status": "skipped", "ok": False, "message": "未触发"}
         try:
             from core.codex_oauth import run_codex_oauth
-            codex_result = run_codex_oauth(email)
+            codex_result = run_codex_oauth(email, proxy=proxy)
         except Exception as exc:
             codex_result = {
                 "status": "failed",
@@ -656,7 +660,7 @@ def main():
     sys.exit(0 if success_count == args.count else 1)
 
 
-def run_one_batch_item(index: int, total: int, batch_dir=None) -> dict:
+def run_one_batch_item(index: int, total: int, batch_dir=None, proxy: str | None = None) -> dict:
     """执行批量注册中的一个任务，返回结构化结果。"""
     logger.info(f"[批量] 开始第 {index + 1}/{total} 个注册")
     try:
@@ -666,7 +670,7 @@ def run_one_batch_item(index: int, total: int, batch_dir=None) -> dict:
             name=name,
             birthday=birthday,
             batch_dir=batch_dir,
-            # proxy 不传 → BrowserSession 会从 PROXY_POOL 随机抽
+            proxy=proxy,
         )
     except Exception as exc:
         logger.error(f"[批量] 第 {index + 1} 个注册准备阶段失败: {type(exc).__name__}: {exc}")
@@ -676,9 +680,14 @@ def run_one_batch_item(index: int, total: int, batch_dir=None) -> dict:
 
 def run_serial_batch(count: int, delay: float, continue_on_fail: bool, batch_dir=None) -> list[dict]:
     """按原有串行方式执行批量注册。"""
+    from config import roxybrowser as _roxy_cfg
+    driver = str(getattr(_roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
+    local = driver in {"protocol", "api", "http", "roxy", "roxybrowser", "fingerprint", "browser", "cloak", "cloakbrowser"}
+    from config.proxy import take_registration_proxies
+    proxies = take_registration_proxies(count) if local else [None] * count
     results = []
     for index in range(count):
-        result = run_one_batch_item(index, count, batch_dir)
+        result = run_one_batch_item(index, count, batch_dir, proxies[index])
         results.append(result)
         if not _is_success(result) and not continue_on_fail:
             logger.error("[批量] 当前账号失败，已停止。需要继续跑可加 --continue-on-fail")
@@ -699,6 +708,11 @@ def run_parallel_batch(
 ) -> list[dict]:
     """使用线程池并发执行批量注册。"""
     logger.info(f"[批量] 启用多线程注册：目标 {count}，并发 {workers}")
+    from config import roxybrowser as _roxy_cfg
+    driver = str(getattr(_roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
+    local = driver in {"protocol", "api", "http", "roxy", "roxybrowser", "fingerprint", "browser", "cloak", "cloakbrowser"}
+    from config.proxy import take_registration_proxies
+    proxies = take_registration_proxies(count) if local else [None] * count
     if delay > 0:
         logger.info(f"[批量] 并发模式下 --delay={delay} 表示提交任务之间的错峰间隔")
 
@@ -711,7 +725,7 @@ def run_parallel_batch(
         nonlocal next_index
         if stop_submitting or next_index >= count:
             return False
-        future = executor.submit(run_one_batch_item, next_index, count, batch_dir)
+        future = executor.submit(run_one_batch_item, next_index, count, batch_dir, proxies[next_index])
         future_to_index[future] = next_index
         next_index += 1
         if delay > 0 and next_index < count:

@@ -102,8 +102,15 @@ from config.proxy import (
     PLAN_CHECK_QUEUE_LIMIT,
     PLAN_CHECK_MIN_INTERVAL,
     PLAN_CHECK_JITTER,
+    normalize_proxy_url,
     pick_proxy,
     PROXY,
+    take_registration_proxy,
+    take_registration_proxies,
+    registration_proxy_pool_status,
+    ProxyPoolError,
+    ProxyPoolEmptyError,
+    ProxyPoolInsufficientError,
 )
 
 # ---------- 注册默认信息 ----------
@@ -242,7 +249,9 @@ __all__ = [
     "PROXY_POOL", "PLAN_CHECK_PROXY_MODE", "PLAN_CHECK_PROXY",
     "PLAN_CHECK_TIMEOUT", "PLAN_CHECK_MAX_ATTEMPTS", "PLAN_CHECK_RETRY_DELAY",
     "PLAN_CHECK_REGISTRATION_RECHECK_DELAY", "PLAN_CHECK_WORKERS", "PLAN_CHECK_QUEUE_LIMIT",
-    "PLAN_CHECK_MIN_INTERVAL", "PLAN_CHECK_JITTER", "pick_proxy", "PROXY",
+    "PLAN_CHECK_MIN_INTERVAL", "PLAN_CHECK_JITTER", "normalize_proxy_url", "pick_proxy", "PROXY",
+    "take_registration_proxy", "take_registration_proxies", "registration_proxy_pool_status",
+    "ProxyPoolError", "ProxyPoolEmptyError", "ProxyPoolInsufficientError",
     # register
     "REGISTER_EMAIL", "REGISTER_PASSWORD", "REGISTER_NAME",
     # email

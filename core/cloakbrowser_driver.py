@@ -65,16 +65,30 @@ class CloakElement:
             self.handle.click(timeout=10000)
 
     def clear(self) -> None:
-        try:
-            if self.locator is not None:
-                self.locator.fill("", timeout=10000)
-            else:
-                self.handle.fill("", timeout=10000)
-        except Exception:
-            # 部分非 input 元素不支持 fill，回退键盘清空。
-            self.click()
-            self.page.keyboard.press("Meta+A")
-            self.page.keyboard.press("Backspace")
+        self._edit_value("", key="clear")
+
+    def set_value(self, value: str) -> Any:
+        """一次性设置受控 input 的完整值，避免逐字符重渲染丢失状态。"""
+        return self._eval(
+            """
+            (el, nextValue) => {
+              const next = String(nextValue ?? '');
+              const tag = (el.tagName || '').toLowerCase();
+              const proto = tag === 'textarea'
+                ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+              const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+              el.focus();
+              if (setter) setter.call(el, next); else el.value = next;
+              try { el.setSelectionRange(next.length, next.length); } catch (_) {}
+              try { el.dispatchEvent(new InputEvent('beforeinput', {bubbles:true, cancelable:true, inputType:'insertText', data:next})); } catch (_) {}
+              try { el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:next})); }
+              catch (_) { el.dispatchEvent(new Event('input', {bubbles:true})); }
+              el.dispatchEvent(new Event('change', {bubbles:true}));
+              return el.value;
+            }
+            """,
+            str(value or ""),
+        )
 
     @property
     def tag_name(self) -> str:
@@ -87,24 +101,57 @@ class CloakElement:
         # 兼容 Selenium: el.send_keys(Keys.COMMAND, 'a')。
         text = "".join(str(v or "") for v in values)
         lower = text.lower()
-        try:
-            self.click()
-        except Exception:
-            pass
         if "\ue03d" in text or "\ue009" in text or "command" in lower or "control" in lower:
             # Selenium Keys.CONTROL/COMMAND 编码可能传入私有区字符；这里按全选处理。
-            try:
-                self.page.keyboard.press("Meta+A")
-            except Exception:
-                self.page.keyboard.press("Control+A")
+            self._eval("el => { el.focus(); try { el.select(); } catch (_) {} }")
             return
-        try:
-            if self.locator is not None:
-                self.locator.fill(text, timeout=10000)
+
+        special_keys = {
+            "\ue003": "Backspace",
+            "\ue017": "Delete",
+            "\ue007": "Enter",
+            "\ue004": "Tab",
+        }
+        if text in special_keys:
+            key = special_keys[text]
+            if key in {"Backspace", "Delete"}:
+                self._edit_value("", key=key.lower())
             else:
-                self.handle.fill(text, timeout=10000)
-        except Exception:
-            self.page.keyboard.type(text, delay=35)
+                self._eval("el => el.focus()")
+                self.page.keyboard.press(key)
+            return
+
+        # Cloak 的 humanize 键盘/fill 会改写字符或长时间等待；通过原生
+        # value setter 更新控件，并派发 input/change 事件保持前端状态同步。
+        self._edit_value(text, key="insert")
+
+    def _edit_value(self, text: str, *, key: str = "insert") -> Any:
+        return self._eval(
+            """
+            (el, payload) => {
+              const value = String(el.value || '');
+              let start = typeof el.selectionStart === 'number' ? el.selectionStart : value.length;
+              let end = typeof el.selectionEnd === 'number' ? el.selectionEnd : value.length;
+              if (payload.key === 'clear') { start = 0; end = value.length; }
+              else if (payload.key === 'backspace' && start === end) start = Math.max(0, start - 1);
+              else if (payload.key === 'delete' && start === end) end = Math.min(value.length, end + 1);
+              const inserted = String(payload.text || '');
+              const next = value.slice(0, start) + inserted + value.slice(end);
+              const proto = (el.tagName || '').toLowerCase() === 'textarea'
+                ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+              const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+              el.focus();
+              if (setter) setter.call(el, next); else el.value = next;
+              const caret = start + inserted.length;
+              try { el.setSelectionRange(caret, caret); } catch (_) {}
+              try { el.dispatchEvent(new InputEvent('input', {bubbles:true, data:inserted, inputType:'insertText'})); }
+              catch (_) { el.dispatchEvent(new Event('input', {bubbles:true})); }
+              el.dispatchEvent(new Event('change', {bubbles:true}));
+              return next;
+            }
+            """,
+            {"text": text, "key": key},
+        )
 
     def get_attribute(self, name: str) -> str | None:
         try:
@@ -113,6 +160,19 @@ class CloakElement:
             return self.handle.get_attribute(name)
         except Exception:
             return None
+
+    @property
+    def text(self) -> str:
+        """Selenium 兼容的可见文本属性。"""
+        try:
+            if self.locator is not None:
+                return str(self.locator.inner_text(timeout=1000) or "")
+            return str(self.handle.inner_text(timeout=1000) or "")
+        except Exception:
+            try:
+                return str(self._eval("el => el.innerText || el.textContent || ''") or "")
+            except Exception:
+                return ""
 
 
 class _SwitchTo:
@@ -317,10 +377,11 @@ class CloakSeleniumDriver:
 
 
 def _normalize_proxy(proxy: str | None) -> str | None:
-    proxy = str(proxy or "").strip()
-    if not proxy:
+    from config.proxy import normalize_proxy_url
+    value = normalize_proxy_url(proxy)
+    if not value:
         return None
-    return proxy.replace("socks5h://", "socks5://")
+    return value.replace("socks5h://", "socks5://")
 
 
 def _detect_cloak_exit_geo(proxy_url: str | None = None) -> dict:
@@ -399,6 +460,7 @@ def build_cloak_driver(proxy: str | None = None) -> tuple[CloakSeleniumDriver, C
     proxy=""    时显式禁用代理；
     proxy="..." 时使用指定代理。
     """
+    explicit_proxy = proxy is not None
     if proxy is None and bool(getattr(_cfg, "CLOAK_USE_PROXY", True)):
         try:
             from config.proxy import pick_proxy
@@ -415,7 +477,7 @@ def build_cloak_driver(proxy: str | None = None) -> tuple[CloakSeleniumDriver, C
     if seed:
         launch_args.append(f"--fingerprint={seed}")
 
-    proxy_url = _normalize_proxy(proxy) if bool(getattr(_cfg, "CLOAK_USE_PROXY", True)) else None
+    proxy_url = _normalize_proxy(proxy) if (explicit_proxy or bool(getattr(_cfg, "CLOAK_USE_PROXY", True))) else None
     locale_opts = _build_cloak_locale_options(proxy_url)
     # geoip=True 交给 CloakBrowser 根据当前出口 IP 自动匹配 timezone/locale/WebRTC。
     # 之前只有显式 proxy_url 时才开启；如果用户走系统代理/VPN/透明代理，代码层面

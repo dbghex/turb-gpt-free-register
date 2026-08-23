@@ -225,6 +225,7 @@ def run_worker(
         result_status = result.get("status", "failed")
         if result.get("ok"):
             db.update_account_codex_status(email, "success", None)
+            db.update_account_codex_phone_verified(email, True, source="oauth_callback")
             logger.info("[Codex 补跑] %s 成功", email)
         elif result_status == "deactivated":
             db.update_account_codex_status(email, "deactivated", result.get("message"))

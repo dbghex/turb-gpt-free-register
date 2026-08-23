@@ -35,7 +35,8 @@ def _join_url(base: str, path: str) -> str:
 
 
 def _mask_proxy(proxy_url: str) -> str:
-    parsed = urlparse(str(proxy_url or "").strip())
+    from config.proxy import normalize_proxy_url
+    parsed = urlparse(normalize_proxy_url(proxy_url))
     if parsed.username or parsed.password:
         host = parsed.hostname or ""
         port = f":{parsed.port}" if parsed.port else ""
@@ -53,7 +54,8 @@ def _proxy_url_to_roxy_info(proxy_url: str) -> dict:
       socks5://user:pass@host:port
       socks5h://user:pass@host:port  -> Roxy 侧按 SOCKS5 处理
     """
-    text = str(proxy_url or "").strip()
+    from config.proxy import normalize_proxy_url
+    text = normalize_proxy_url(proxy_url)
     if not text:
         raise ValueError("代理为空")
     parsed = urlparse(text)
@@ -172,12 +174,33 @@ class RoxyBrowserClient:
             or "http 429" in text
         )
 
+    @staticmethod
+    def _is_safe_create_retry_error(exc: Exception) -> bool:
+        """只重试 Roxy 已明确判定为“创建前上游建连失败”的错误。
+
+        /browser/create 的客户端超时可能已经在服务端创建成功，盲目重试会产生
+        孤儿环境；但 Roxy 返回的代理/TLS 建连失败表示创建没有完成，可以安全地
+        复用同一请求体和同一条已领取代理重试。
+        """
+        text = str(exc or "").lower()
+        if "roxy api 返回失败" not in text:
+            return False
+        return any(marker in text for marker in (
+            "client network socket disconnected before secure tls connection was established",
+            "before secure tls connection was established",
+            "socket hang up",
+            "econnreset",
+            "econnrefused",
+            "enotfound",
+        ))
+
     def request(self, method: str, path: str, *, params: dict | None = None, json_body: dict | None = None) -> dict:
         url = _join_url(self.api_base, path)
         method_u = method.upper()
-        # create 超时后服务端可能已创建环境，直接重试可能产生孤儿环境；默认不重试 create。
+        # create 超时后服务端可能已创建环境，不能按普通网络错误盲目重试；只有
+        # Roxy 明确返回“创建前上游 TLS/Socket 建连失败”时才允许安全重试。
         is_create = str(path or "").rstrip("/").endswith("/create") or "browser/create" in str(path or "")
-        max_attempts = 1 if is_create else max(1, int(getattr(_cfg, "ROXY_API_RETRIES", 3) or 3))
+        max_attempts = max(1, int(getattr(_cfg, "ROXY_API_RETRIES", 3) or 3))
         base_delay = max(0.5, float(getattr(_cfg, "ROXY_API_RETRY_DELAY", 2) or 2))
         last_exc: Exception | None = None
         for attempt in range(1, max_attempts + 1):
@@ -212,7 +235,11 @@ class RoxyBrowserClient:
                 return payload if isinstance(payload, dict) else {"data": payload}
             except Exception as exc:
                 last_exc = exc
-                retryable = self._is_retryable_error(exc)
+                retryable = (
+                    self._is_safe_create_retry_error(exc)
+                    if is_create
+                    else self._is_retryable_error(exc)
+                )
                 if attempt >= max_attempts or not retryable:
                     raise
                 delay = base_delay * attempt
@@ -374,7 +401,7 @@ class RoxyBrowserClient:
 
         return {"ok": False, "items": [], "errors": errors}
 
-    def create_profile(self, payload: dict | None = None) -> str:
+    def create_profile(self, payload: dict | None = None, proxy_url: str | None = None) -> str:
         body = dict(getattr(_cfg, "ROXY_PROFILE_CREATE_PAYLOAD", {}) or {})
         random_name_enabled = bool(getattr(_cfg, "ROXY_RANDOM_PROFILE_NAME_ON_CREATE", True))
         if random_name_enabled:
@@ -401,7 +428,9 @@ class RoxyBrowserClient:
         project_id = _project_id_value()
         if project_id:
             body.setdefault("projectId", project_id)
-        if bool(getattr(_cfg, "ROXY_CREATE_USE_PROXY_POOL", False)) and not body.get("proxyInfo"):
+        if proxy_url:
+            body["proxyInfo"] = _proxy_url_to_roxy_info(proxy_url)
+        elif bool(getattr(_cfg, "ROXY_CREATE_USE_PROXY_POOL", False)) and not body.get("proxyInfo"):
             from config import proxy as _proxy_cfg
 
             proxy_url = _proxy_cfg.pick_proxy()
@@ -452,7 +481,7 @@ class RoxyBrowserClient:
             return ""
         return text
 
-    def open_profile(self, profile_id: str | None = None) -> RoxyOpenResult:
+    def open_profile(self, profile_id: str | None = None, proxy_url: str | None = None) -> RoxyOpenResult:
         one_profile = bool(getattr(_cfg, "ROXY_ONE_PROFILE_PER_ACCOUNT", True))
         configured_pid = self._normalize_profile_id(profile_id if profile_id is not None else getattr(_cfg, "ROXY_PROFILE_ID", ""))
         if one_profile and configured_pid:
@@ -462,9 +491,11 @@ class RoxyBrowserClient:
             )
 
         pid = configured_pid
+        if pid and proxy_url:
+            raise RuntimeError("Roxy 固定 Profile 无法为当前注册任务切换代理，请清空 ROXY_PROFILE_ID")
         created_by_run = False
         if not pid:
-            pid = self.create_profile()
+            pid = self.create_profile(proxy_url=proxy_url)
             created_by_run = True
             logger.info("[Roxy] 已创建临时环境：%s", pid)
 

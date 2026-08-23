@@ -804,7 +804,7 @@ def _submit_email(session: BrowserSession, email: str) -> None:
 # 步骤 2：提交邮箱 OTP
 # ============================================================
 
-def _submit_email_otp(session: BrowserSession, code: str) -> None:
+def _submit_email_otp(session: BrowserSession, code: str):
     """POST email-otp/validate 提交邮箱验证码。带 sentinel(authorize_continue)。"""
     sentinel_resp = request_sentinel_token(session, "authorize_continue")
     sentinel_header, so_header = build_sentinel_header(session, sentinel_resp, "authorize_continue")
@@ -833,6 +833,109 @@ def _submit_email_otp(session: BrowserSession, code: str) -> None:
             f"[Codex] 邮箱 OTP 验证失败 status={resp.status_code}: {(resp.text or '')[:300]}"
         )
     logger.info("[Codex] 邮箱 OTP 验证通过")
+    return resp
+
+
+def _walk_auth_response_strings(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield str(key)
+            yield from _walk_auth_response_strings(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _walk_auth_response_strings(item)
+    elif value is not None:
+        yield str(value)
+
+
+def _auth_response_strings(resp) -> list[str]:
+    values: list[str] = []
+    data = _resp_json(resp)
+    values.extend(_walk_auth_response_strings(data))
+    text = str(getattr(resp, "text", "") or "").strip()
+    if text:
+        values.append(text)
+    url = str(getattr(resp, "url", "") or "").strip()
+    if url:
+        values.append(url)
+    try:
+        location = resp.headers.get("location") or resp.headers.get("Location")
+    except Exception:
+        location = None
+    if location:
+        values.append(str(location))
+    return values
+
+
+def _extract_direct_callback_from_auth_response(resp) -> str:
+    """从邮箱 OTP 响应中提取已经直接返回的 Codex localhost callback。"""
+    for value in _auth_response_strings(resp):
+        candidate = str(value or "").strip()
+        if _is_redirect_uri(candidate):
+            return candidate
+    return ""
+
+
+def _email_otp_phone_requirement(resp) -> bool | None:
+    """判断邮箱 OTP 后是否明确进入手机验证。
+
+    True 表示明确要求手机验证；False 表示已进入 consent/workspace/callback，
+    即账号已经接码或本次无需接码；None 表示响应没有足够信息。
+    """
+    material = " ".join(_auth_response_strings(resp)).lower()
+    phone_markers = (
+        "/add-phone",
+        "phone-verification",
+        "phone_verification",
+        "phone verification required",
+        "verify your phone",
+        "required_phone_verification",
+    )
+    if any(marker in material for marker in phone_markers):
+        return True
+    completed_markers = (
+        "localhost:1455/auth/callback",
+        "127.0.0.1:1455/auth/callback",
+        "sign-in-with-chatgpt/codex/consent",
+        "workspace/select",
+        '"type":"consent"',
+        '"type": "consent"',
+    )
+    if any(marker in material for marker in completed_markers):
+        return False
+    return None
+
+
+def _phone_step_required_error(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    return any(marker in text for marker in (
+        "/add-phone",
+        "phone-verification",
+        "phone_verification",
+        "phone verification required",
+        "verify your phone",
+        "required_phone_verification",
+    ))
+
+
+def _mark_codex_phone_verified(email: str, source: str) -> None:
+    if not email:
+        return
+    try:
+        from core import db
+        db.update_account_codex_phone_verified(email, True, source=source)
+    except Exception:
+        logger.debug("[Codex] 写入已接码状态失败", exc_info=True)
+
+
+def _known_codex_phone_verified(email: str) -> bool:
+    if not email:
+        return False
+    try:
+        from core import db
+        return db.is_account_codex_phone_verified(email)
+    except Exception:
+        return False
 
 
 # ============================================================
@@ -841,7 +944,7 @@ def _submit_email_otp(session: BrowserSession, code: str) -> None:
 
 def _sms_provider_name() -> str:
     """当前接码通道名，仅用于 Codex 流程日志。"""
-    return str(getattr(_cfg, "SMS_PROVIDER", "grizzly") or "grizzly").strip().lower()
+    return sms_provider.current_settings().provider
 
 
 def _sleep_before_phone_retry(attempt: int, max_retries: int, *, prefix: str = "[Codex]") -> None:
@@ -853,7 +956,7 @@ def _sleep_before_phone_retry(attempt: int, max_retries: int, *, prefix: str = "
     time.sleep(seconds)
 
 
-def _do_phone_verification(session: BrowserSession) -> None:
+def _do_phone_verification(session: BrowserSession, *, email: str = "") -> None:
     """
     用接码平台拿号 → add-phone/send 发短信 → 收码 → phone-otp/validate。
     一个号收不到码或被 OpenAI 拒就取消换号，最多 SMS_MAX_RETRIES 次（热加载）。
@@ -862,9 +965,12 @@ def _do_phone_verification(session: BrowserSession) -> None:
         - SMS_PROVIDER="grizzly"：GrizzlySMS handler_api.php
         - SMS_PROVIDER="l"：L_API.md 的 /take-phone 和 /fetch-code JSON 接口
     """
-    http = sms_provider._http()
-    max_retries = _cfg.SMS_MAX_RETRIES
-    provider = _sms_provider_name()
+    sms_settings = sms_provider.prepare_task_settings(sms_provider.current_settings())
+    sms_context = sms_provider.bind_settings(sms_settings)
+    sms_context.__enter__()
+    http = sms_provider._http(sms_settings)
+    max_retries = sms_settings.max_retries
+    provider = sms_settings.provider
     try:
         last_err = None
         for attempt in range(1, max_retries + 1):
@@ -903,11 +1009,11 @@ def _do_phone_verification(session: BrowserSession) -> None:
                 try:
                     logger.info(
                         f"[Codex] 短信已发送，开始轮询验证码 activation_id={activation_id}, "
-                        f"wait={_cfg.SMS_CODE_WAIT}s, interval={_cfg.SMS_POLL_INTERVAL}s"
+                        f"wait={sms_settings.code_wait}s, interval={sms_settings.poll_interval}s"
                     )
                     sms_code = sms_provider.wait_for_sms_code(activation_id, http)
                 except sms_provider.SmsCodeTimeout:
-                    logger.warning(f"[Codex] 号码 +{phone} 在 {_cfg.SMS_CODE_WAIT}s 内未收到短信，取消换号")
+                    logger.warning(f"[Codex] 号码 +{phone} 在 {sms_settings.code_wait}s 内未收到短信，取消换号")
                     sms_provider.cancel(activation_id, http)
                     _sleep_before_phone_retry(attempt, max_retries)
                     continue
@@ -932,11 +1038,14 @@ def _do_phone_verification(session: BrowserSession) -> None:
 
                 # 成功
                 sms_provider.complete(activation_id, http)
+                _mark_codex_phone_verified(email, provider)
                 logger.info("[Codex] 手机号验证通过")
                 return
 
-            except sms_provider.SmsNoBalanceError:
-                # 余额不足，重试无意义，直接抛
+            except sms_provider.SmsFatalProviderError:
+                # 密钥、余额、参数、封禁或购买结果未知均不能靠换号解决。
+                if activation_id:
+                    sms_provider.cancel(activation_id, http)
                 raise
             except sms_provider.SmsProviderError as exc:
                 last_err = exc
@@ -945,6 +1054,11 @@ def _do_phone_verification(session: BrowserSession) -> None:
                     sms_provider.cancel(activation_id, http)
                 _sleep_before_phone_retry(attempt, max_retries)
                 continue
+            except Exception:
+                # 手动停止或 OpenAI 请求异常也必须释放已经购买的号码。
+                if activation_id:
+                    sms_provider.cancel(activation_id, http)
+                raise
 
         raise RuntimeError(
             f"[Codex] 手机号验证重试 {max_retries} 次仍失败（provider={provider}）"
@@ -952,6 +1066,7 @@ def _do_phone_verification(session: BrowserSession) -> None:
         )
     finally:
         http.close()
+        sms_context.__exit__(None, None, None)
 
 
 # ============================================================
@@ -1427,16 +1542,42 @@ def run_codex_oauth(
                 human_delay("api")
         logger.info(f"[Codex] 邮箱 OTP 收到：{email_otp}")
         human_delay("otp_input")
-        _submit_email_otp(session, email_otp)
+        email_otp_response = _submit_email_otp(session, email_otp)
         human_delay("api")
 
-        # 5. 手机号验证（接码，自动重试换号）
-        _do_phone_verification(session)
-        human_delay("post_auth")
+        # 5. 识别邮箱 OTP 后的真实下一步。已接码账号通常直接进入
+        #    consent/workspace/callback，此时绝不先购买短信号码。
+        callback_url = _extract_direct_callback_from_auth_response(email_otp_response)
+        phone_required = _email_otp_phone_requirement(email_otp_response)
+        known_phone_verified = _known_codex_phone_verified(email)
+        if callback_url:
+            logger.info("[Codex] 邮箱 OTP 后已直接获得 callback，判定账号已接码/无需再次接码")
+        else:
+            if phone_required is True:
+                logger.info("[Codex] 邮箱 OTP 后明确进入手机验证页，开始接码")
+                _do_phone_verification(session, email=email)
+                human_delay("post_auth")
+            elif phone_required is False:
+                logger.info("[Codex] 邮箱 OTP 后已进入 consent/workspace，判定账号已接码，跳过取号")
+            elif known_phone_verified:
+                logger.info("[Codex] 本地已记录账号接码成功，优先直接进入 consent/callback")
+            else:
+                logger.info("[Codex] 邮箱 OTP 响应未明确要求手机验证，先尝试 consent/callback，避免误购号码")
 
-        # 6. 选 workspace → 拿 callback code
-        callback_url = _select_workspace_and_get_callback(session, state)
+            # 6. 选 workspace → 拿 callback code。只有服务端明确返回手机步骤时，
+            #    才回退到接码流程后重试一次。
+            try:
+                callback_url = _select_workspace_and_get_callback(session, state)
+            except Exception as exc:
+                if phone_required is not True and _phone_step_required_error(exc):
+                    logger.info("[Codex] consent 探测确认仍需手机验证，开始接码后继续 callback")
+                    _do_phone_verification(session, email=email)
+                    human_delay("post_auth")
+                    callback_url = _select_workspace_and_get_callback(session, state)
+                else:
+                    raise
         code = _extract_code(callback_url, state)
+        _mark_codex_phone_verified(email, "oauth_callback")
         logger.info(f"[Codex] 已拿到 authorization code：{code[:24]}...")
 
         # 7A. CPA 模式：把 callback URL 交给 CPA，由 CPA 持有 verifier 并完成换 token / 写 auth。

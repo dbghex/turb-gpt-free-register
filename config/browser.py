@@ -81,7 +81,7 @@ CLOUD_PROXY_ORG_KEYWORDS = [
 ]
 COUNTRY_LOCALE_PROFILE_MAP = {
     "JP": "jp", "CN": "cn", "HK": "hk", "TW": "tw", "US": "us", "CA": "us",
-    "SG": "sg", "GB": "gb", "AU": "gb", "DE": "de", "FR": "fr", "NL": "nl",
+    "SG": "sg", "PH": "ph", "GB": "gb", "AU": "gb", "DE": "de", "FR": "fr", "NL": "nl",
 }
 
 BROWSER_LOCALE_PROFILES = {
@@ -89,6 +89,7 @@ BROWSER_LOCALE_PROFILES = {
     "cn": {"navigator_language": "zh-CN", "navigator_languages": ["zh-CN"], "accept_language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7", "timezone_iana": "Asia/Shanghai", "timezone_offset_minutes": 8 * 60, "timezone_name": "China Standard Time"},
     "us": {"navigator_language": "en-US", "navigator_languages": ["en-US"], "accept_language": "en-US,en;q=0.9", "timezone_iana": "America/Los_Angeles", "timezone_offset_minutes": -7 * 60, "timezone_name": "Pacific Daylight Time"},
     "sg": {"navigator_language": "en-SG", "navigator_languages": ["en-SG"], "accept_language": "en-SG,en-US;q=0.9,en;q=0.8", "timezone_iana": "Asia/Singapore", "timezone_offset_minutes": 8 * 60, "timezone_name": "Singapore Standard Time"},
+    "ph": {"navigator_language": "en-PH", "navigator_languages": ["en-PH", "en"], "accept_language": "en-PH,en-US;q=0.9,en;q=0.8", "timezone_iana": "Asia/Manila", "timezone_offset_minutes": 8 * 60, "timezone_name": "Singapore Standard Time"},
     "hk": {"navigator_language": "zh-HK", "navigator_languages": ["zh-HK"], "accept_language": "zh-HK,zh-TW;q=0.9,zh;q=0.8,en-US;q=0.7,en;q=0.6", "timezone_iana": "Asia/Hong_Kong", "timezone_offset_minutes": 8 * 60, "timezone_name": "Hong Kong Standard Time"},
     "tw": {"navigator_language": "zh-TW", "navigator_languages": ["zh-TW"], "accept_language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7", "timezone_iana": "Asia/Taipei", "timezone_offset_minutes": 8 * 60, "timezone_name": "Taipei Standard Time"},
     "gb": {"navigator_language": "en-GB", "navigator_languages": ["en-GB"], "accept_language": "en-GB,en-US;q=0.9,en;q=0.8", "timezone_iana": "Europe/London", "timezone_offset_minutes": 1 * 60, "timezone_name": "British Summer Time"},
@@ -101,6 +102,7 @@ TIMEZONE_NAME_BY_IANA = {
     "Asia/Tokyo": "Japan Standard Time",
     "Asia/Shanghai": "China Standard Time",
     "Asia/Singapore": "Singapore Standard Time",
+    "Asia/Manila": "Singapore Standard Time",
     "Asia/Hong_Kong": "Hong Kong Standard Time",
     "Asia/Taipei": "Taipei Standard Time",
     "America/Los_Angeles": "Pacific Daylight Time",
@@ -133,7 +135,9 @@ def _locale_profile_key_from_geo(geo: dict | None) -> str:
 
 def _build_locale_from_geo(geo: dict | None) -> dict:
     key = _locale_profile_key_from_geo(geo)
-    locale = dict(BROWSER_LOCALE_PROFILES.get(key, BROWSER_LOCALE_PROFILES[BROWSER_LOCALE_PROFILE]))
+    # 配置中可能填写未内置的地区代码（例如 ph）；必须安全回退，不能直接索引抛 KeyError。
+    fallback_key = BROWSER_LOCALE_PROFILE if BROWSER_LOCALE_PROFILE in BROWSER_LOCALE_PROFILES else "jp"
+    locale = dict(BROWSER_LOCALE_PROFILES.get(key) or BROWSER_LOCALE_PROFILES[fallback_key])
     if geo and AUTO_BROWSER_LOCALE_FROM_IP:
         tz = str(geo.get("timezone") or "").strip()
         if tz:
@@ -144,7 +148,7 @@ def _build_locale_from_geo(geo: dict | None) -> dict:
     return locale
 
 
-_LOCALE = BROWSER_LOCALE_PROFILES.get(BROWSER_LOCALE_PROFILE, BROWSER_LOCALE_PROFILES["jp"])
+_LOCALE = BROWSER_LOCALE_PROFILES.get(BROWSER_LOCALE_PROFILE) or BROWSER_LOCALE_PROFILES["jp"]
 NAVIGATOR_LANGUAGE = _LOCALE["navigator_language"]
 NAVIGATOR_LANGUAGES = list(_LOCALE["navigator_languages"])
 ACCEPT_LANGUAGE = _LOCALE["accept_language"]

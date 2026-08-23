@@ -695,6 +695,43 @@ def update_account_codex_status(email: str, codex_status: str, codex_error: str 
         return True
 
 
+def update_account_codex_phone_verified(
+    email: str,
+    verified: bool = True,
+    *,
+    source: str | None = None,
+) -> bool:
+    """记录账号已经通过 Codex 手机验证门槛。
+
+    只保存布尔状态、时间和来源，不保存手机号或短信验证码。该状态用于补跑时
+    优先尝试直接进入 consent/callback；OpenAI 页面若明确再次要求手机验证，
+    远端页面状态仍然优先。
+    """
+    with _LOCK:
+        accounts = _load_accounts()
+        row = _find_by_email(accounts, email)
+        if row is None:
+            return False
+        row["codex_phone_verified"] = bool(verified)
+        if verified:
+            row["codex_phone_verified_at"] = _now()
+            if source:
+                row["codex_phone_verified_source"] = str(source)
+        else:
+            row["codex_phone_verified_at"] = None
+            row["codex_phone_verified_source"] = None
+        row["updated_at"] = _now()
+        _save_accounts(accounts)
+        return True
+
+
+def is_account_codex_phone_verified(email: str) -> bool:
+    """返回本地是否已记录该账号通过 Codex 手机验证。"""
+    with _LOCK:
+        row = _find_by_email(_load_accounts(), email)
+        return bool(row and row.get("codex_phone_verified"))
+
+
 def claim_account_codex_agent(acc_id: int, trigger: str = "manual") -> bool:
     """原子占用账号 Codex Agent Token 生成任务；已有未超时任务时返回 False。"""
     with _LOCK:
@@ -950,6 +987,7 @@ def update_account_plan_check(acc_id: int | None = None, email: str | None = Non
             row["plus_trial_duration_num_periods"] = result.get("plus_trial_duration_num_periods")
             row["plus_trial_duration_period"] = result.get("plus_trial_duration_period")
             row["eligible_offer_ids"] = result.get("eligible_offer_ids") or []
+
             row["plan_last_success_at"] = result.get("checked_at") or _now()
             row["plan_last_success_result_json"] = json.dumps(result, ensure_ascii=False)
         row["plan_check_proxy_mode"] = result.get("proxy_mode")
@@ -960,6 +998,101 @@ def update_account_plan_check(acc_id: int | None = None, email: str | None = Non
         row["token_expires_at"] = result.get("token_expires_at")
         row["plan_check_result_json"] = json.dumps(result, ensure_ascii=False)
         row["updated_at"] = _now()
+        _save_accounts(accounts)
+        return True
+
+
+def claim_account_gcash_eligibility(acc_id: int, trigger: str = "manual") -> bool:
+    """原子占用单账号 GCash 资格查询，独立于套餐查询状态。"""
+    with _LOCK:
+        accounts = _load_accounts()
+        row = next((r for r in accounts if int(r.get("id") or 0) == int(acc_id)), None)
+        if row is None:
+            return False
+        status = str(row.get("gcash_eligibility_status") or "")
+        if status in {"queued", "running"}:
+            try:
+                stamp = row.get("gcash_eligibility_started_at") if status == "running" else row.get("gcash_eligibility_queued_at")
+                if stamp and (datetime.now() - datetime.fromisoformat(str(stamp))).total_seconds() < (_PLAN_CHECK_STALE_SECONDS if status == "running" else _PLAN_CHECK_QUEUE_STALE_SECONDS):
+                    return False
+            except (TypeError, ValueError):
+                return False
+        now = _now()
+        row.update({
+            "gcash_eligibility_status": "queued",
+            "gcash_eligibility_trigger": str(trigger or "manual"),
+            "gcash_eligibility_queued_at": now,
+            "gcash_eligibility_started_at": None,
+            "gcash_eligibility_completed_at": None,
+            "gcash_eligibility_error": None,
+            "updated_at": now,
+        })
+        _save_accounts(accounts)
+        return True
+
+
+def mark_account_gcash_eligibility_running(acc_id: int) -> bool:
+    with _LOCK:
+        accounts = _load_accounts()
+        row = next((r for r in accounts if int(r.get("id") or 0) == int(acc_id)), None)
+        if row is None or row.get("gcash_eligibility_status") not in {"queued", "running"}:
+            return False
+        row["gcash_eligibility_status"] = "running"
+        row["gcash_eligibility_started_at"] = _now()
+        row["gcash_eligibility_error"] = None
+        row["updated_at"] = _now()
+        _save_accounts(accounts)
+        return True
+
+
+def recover_interrupted_gcash_eligibility() -> int:
+    with _LOCK:
+        accounts = _load_accounts()
+        now = _now()
+        recovered = 0
+        for row in accounts:
+            if row.get("gcash_eligibility_status") not in {"queued", "running"}:
+                continue
+            row.update({
+                "gcash_eligibility_status": "failed",
+                "gcash_eligibility_ok": False,
+                "gcash_eligibility_error": "WebUI 重启导致 GCash 资格查询中断，请重新查询",
+                "gcash_eligibility_completed_at": now,
+                "updated_at": now,
+            })
+            recovered += 1
+        if recovered:
+            _save_accounts(accounts)
+        return recovered
+
+
+def update_account_gcash_eligibility(acc_id: int, result: dict | None = None) -> bool:
+    result = result or {}
+    with _LOCK:
+        accounts = _load_accounts()
+        row = next((r for r in accounts if int(r.get("id") or 0) == int(acc_id)), None)
+        if row is None:
+            return False
+        query_ok = bool(result.get("query_ok", result.get("ok")))
+        eligible = bool(result.get("qualification_ok", result.get("eligible")))
+        row.update({
+            "gcash_eligibility_status": "success" if query_ok else "failed",
+            "gcash_eligibility_ok": eligible,
+            "gcash_eligibility_outcome": result.get("outcome"),
+            "gcash_eligibility_valid": result.get("valid"),
+            "gcash_eligibility_payment_method_available": result.get("payment_method_available"),
+            "gcash_eligibility_checkout_amount_is_zero": result.get("checkout_amount_is_zero"),
+            "gcash_eligibility_eligible": result.get("eligible"),
+            "gcash_eligibility_reason": result.get("reason"),
+            "gcash_eligibility_message": result.get("message"),
+            "gcash_eligibility_retryable": result.get("retryable"),
+            "gcash_eligibility_http_status": result.get("http_status"),
+            "gcash_eligibility_checked_at": result.get("checked_at") or _now(),
+            "gcash_eligibility_completed_at": _now(),
+            "gcash_eligibility_error": None if query_ok else result.get("error"),
+            "gcash_eligibility_result_json": json.dumps({k: v for k, v in result.items() if k not in {"eligibility_proof", "access_token", "cdk"}}, ensure_ascii=False),
+            "updated_at": _now(),
+        })
         _save_accounts(accounts)
         return True
 
@@ -1142,6 +1275,14 @@ def list_account_plan_check_statuses(limit: int = 5000, offset: int = 0, archive
         "plan_check_completed_at", "plan_checked_at", "plan_last_success_at",
         "plan_check_network_route", "plan_check_proxy_used", "plan_check_proxy_fallback_reason",
         "live_check_device_id", "live_check_proxy_used", "live_check_fingerprint_text",
+        "gcash_eligibility_status", "gcash_eligibility_ok", "gcash_eligibility_outcome",
+        "gcash_eligibility_valid", "gcash_eligibility_payment_method_available",
+        "gcash_eligibility_checkout_amount_is_zero", "gcash_eligibility_eligible",
+        "gcash_eligibility_reason", "gcash_eligibility_message", "gcash_eligibility_retryable",
+        "gcash_eligibility_http_status", "gcash_eligibility_checked_at",
+        "gcash_eligibility_trigger",
+        "gcash_eligibility_queued_at", "gcash_eligibility_started_at", "gcash_eligibility_completed_at",
+        "gcash_eligibility_error",
         "expires_at", "plan_expires_at", "plan_renews_at", "renews_at",
         "billing_period", "billing_currency", "discount_amount", "discount_type",
         "discount_expires_at", "discount_promo_campaign_id",
@@ -1151,6 +1292,7 @@ def list_account_plan_check_statuses(limit: int = 5000, offset: int = 0, archive
         "extract_link_image_url_png", "extract_link_image_url_svg",
         "extract_link_expires_at",
         "codex_status", "codex_error",
+        "codex_phone_verified", "codex_phone_verified_at", "codex_phone_verified_source",
         "codex_agent_status", "codex_agent_message",
         "codex_agent_runtime_id", "codex_agent_sub2api_url",
         "codex_agent_sub2api_mode", "codex_agent_sub2api_total",
@@ -1192,8 +1334,13 @@ def list_account_plan_check_statuses(limit: int = 5000, offset: int = 0, archive
                     "current_plan_type": row.get("current_plan_type"),
                     "plan_type": row.get("plan_type"),
                     "plus_trial_eligible": row.get("plus_trial_eligible"),
+                    "gcash_eligibility_status": row.get("gcash_eligibility_status"),
+                    "gcash_eligibility_ok": row.get("gcash_eligibility_ok"),
+                    "gcash_eligibility_outcome": row.get("gcash_eligibility_outcome"),
+                    "gcash_eligibility_reason": row.get("gcash_eligibility_reason"),
                     "extract_link_status": row.get("extract_link_status"),
                     "codex_status": row.get("codex_status"),
+                    "codex_phone_verified": row.get("codex_phone_verified"),
                     "codex_agent_status": row.get("codex_agent_status"),
                 }
                 for row in all_rows
@@ -2074,6 +2221,8 @@ def _new_job_row(
     retry_action: str | None = None,
     email: str | None = None,
     account_id: int | None = None,
+    proxy_used: str | None = None,
+    sms_snapshot: dict | None = None,
 ) -> dict:
     job_uuid = str(uuid.uuid4())
     log_file = str(_LOG_DIR / f"{job_uuid}.log")
@@ -2094,15 +2243,43 @@ def _new_job_row(
         "started_at": None,
         "completed_at": None,
         "account_id": account_id,
+        "proxy_used": proxy_used,
+        "sms_snapshot": _sanitize_sms_snapshot(sms_snapshot),
         "created_at": _now(),
     }
 
 
-def create_job(email_source: str) -> dict:
+def _sanitize_sms_snapshot(snapshot: dict | None) -> dict:
+    """任务记录只保留非 secret 接码配置，防止调用方误传完整 settings。"""
+    if not isinstance(snapshot, dict):
+        return {}
+    result = {}
+    for key, value in snapshot.items():
+        name = str(key)
+        lowered = name.lower()
+        if lowered.endswith("_configured"):
+            result[name] = bool(value)
+            continue
+        if any(word in lowered for word in ("api_key", "secret", "password", "auth_code", "token")):
+            continue
+        result[name] = value
+    return result
+
+
+def create_job(
+    email_source: str,
+    proxy_used: str | None = None,
+    sms_snapshot: dict | None = None,
+) -> dict:
     """创建一个首次执行的 pending 注册任务。"""
     with _LOCK:
         rows = _load_jobs()
-        row = _new_job_row(rows, email_source=email_source)
+        row = _new_job_row(
+            rows,
+            email_source=email_source,
+            proxy_used=proxy_used,
+            sms_snapshot=sms_snapshot,
+        )
         rows.append(row)
         _save_jobs(rows)
         return dict(row)
@@ -2115,6 +2292,7 @@ def create_retry_job(
     email_source: str,
     email: str | None = None,
     account_id: int | None = None,
+    sms_snapshot: dict | None = None,
 ) -> tuple[dict, bool]:
     """原子创建重试子任务；同一任务链已有活跃任务时直接复用。"""
     with _LOCK:
@@ -2153,6 +2331,7 @@ def create_retry_job(
             retry_action=("codex" if job_type == "codex_retry" else "registration"),
             email=email,
             account_id=account_id,
+            sms_snapshot=sms_snapshot,
         )
         rows.append(row)
         _save_jobs(rows)

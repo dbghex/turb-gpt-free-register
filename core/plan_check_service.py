@@ -58,6 +58,12 @@ def _registration_recheck_delay() -> float:
     return _float_setting("PLAN_CHECK_REGISTRATION_RECHECK_DELAY", 2.0, 0.0, 30.0)
 
 
+def _is_free_plan_result(result: dict) -> bool:
+    plan_type = str(result.get("current_plan_type") or "").strip().lower()
+    subscription_plan = str(result.get("subscription_plan") or "").strip().lower()
+    return plan_type == "free" or subscription_plan == "chatgptfreeplan"
+
+
 def _run_plan_check(
     *,
     account_id: int,
@@ -83,7 +89,7 @@ def _run_plan_check(
             trigger == "registration_auto"
             and recheck_delay > 0
             and bool(result.get("ok"))
-            and str(result.get("current_plan_type") or "").lower() == "free"
+            and _is_free_plan_result(result)
             and not bool(result.get("plus_trial_eligible"))
         )
         if should_recheck:

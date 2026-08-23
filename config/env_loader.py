@@ -10,11 +10,38 @@ from __future__ import annotations
 
 import os
 import re
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _ENV_PATH = _PROJECT_ROOT / ".env"
 _LOADED = False
+_ENV_WRITE_LOCK = threading.RLock()
+
+
+@contextmanager
+def env_write_lock():
+    """Serialize .env readers/writers across threads and processes."""
+    with _ENV_WRITE_LOCK:
+        lock_path = _ENV_PATH.with_suffix(_ENV_PATH.suffix + ".lock")
+        lock_path.touch(exist_ok=True)
+        handle = lock_path.open("r+", encoding="utf-8")
+        try:
+            try:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            except ImportError:
+                pass
+            yield
+        finally:
+            try:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except ImportError:
+                pass
+            handle.close()
+
 
 # 这些多行列表字段允许用空值显式覆盖为 []。
 # 例如 WebUI 清空代理池后会写入 PROXY_POOL="" / PROXY_POOL="[]"，不能再回退到源码默认本地代理。
@@ -40,6 +67,7 @@ SECRET_ENV_KEYS: dict[str, str] = {
     "SUB2API_API_KEY": "sub2api 管理接口 API Key",
     "SUB2API_API_TOKEN": "sub2api 管理接口鉴权 Token（旧配置名，兼容）",
     "SMS_API_KEY": "接码平台 API Key（如 GrizzlySMS）",
+    "HERO_SMS_API_KEY": "HeroSMS API Key",
     "L_ADMIN_AUTH_CODE": "本地 L 接码服务 ADMIN_AUTH_CODE",
     "H_ADMIN_AUTH_CODE": "本地 H 接码服务 ADMIN_AUTH_CODE",
 }
@@ -129,6 +157,11 @@ def write_env_values(updates: dict[str, str]) -> list[str]:
     if not updates:
         return []
 
+    with env_write_lock():
+        return _write_env_values_locked(updates)
+
+
+def _write_env_values_locked(updates: dict[str, str]) -> list[str]:
     existing_lines: list[str] = []
     if _ENV_PATH.exists():
         existing_lines = _ENV_PATH.read_text(encoding="utf-8").splitlines()
@@ -162,6 +195,10 @@ def write_env_values(updates: dict[str, str]) -> list[str]:
     tmp = _ENV_PATH.with_suffix(".env.tmp")
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(_ENV_PATH)
+    try:
+        _ENV_PATH.chmod(0o600)
+    except OSError:
+        pass
 
     # 让当前进程立刻看到新值
     load_env(override=True)

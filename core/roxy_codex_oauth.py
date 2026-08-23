@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from config import roxybrowser as _roxy_cfg
 from core.email_provider import wait_for_otp
 from core.humanize import delay as human_delay
-from core import sms_provider
+from core import db, sms_provider
 from core.openai_auth import AccountUnusableError, detect_account_unusable_response_body
 from core.roxybrowser_client import RoxyBrowserClient
 from core.roxy_registration import (
@@ -1056,11 +1056,14 @@ def _sleep_before_phone_retry(attempt: int, max_retries: int, *, prefix: str = "
     time.sleep(seconds)
 
 
-def _do_phone_verification_if_present(driver) -> None:
+def _do_phone_verification_if_present(driver, *, email: str = "") -> None:
     """如果页面要求手机号验证，则用当前 sms_provider 自动完成。"""
-    provider = str(getattr(sms_provider._cfg, "SMS_PROVIDER", "") or "").strip().lower() if hasattr(sms_provider, "_cfg") else ""
-    http = sms_provider._http()
-    max_retries = int(getattr(sms_provider._cfg, "SMS_MAX_RETRIES", 10) or 10) if hasattr(sms_provider, "_cfg") else 10
+    sms_settings = sms_provider.current_settings()
+    sms_context = sms_provider.bind_settings(sms_settings)
+    sms_context.__enter__()
+    provider = sms_settings.provider
+    http = sms_provider._http(sms_settings)
+    max_retries = sms_settings.max_retries
     try:
         # 如果页面没有手机号输入框，直接返回。
         try:
@@ -1073,14 +1076,19 @@ def _do_phone_verification_if_present(driver) -> None:
             if not (_has_strict_add_phone_form(driver) or _is_phone_code_page(driver)):
                 raise RuntimeError("not_phone_flow")
         except Exception:
-            logger.info("[Codex][Browser] 未检测到手机号验证页，跳过手机步骤")
+            logger.info("[Codex][Browser] 未检测到手机号验证页，判定账号已接码或当前无需接码，跳过取号")
             return
 
+        sms_settings = sms_provider.prepare_task_settings(sms_settings, http=http)
+        max_retries = sms_settings.max_retries
+        provider = sms_settings.provider
         last_err = None
         for attempt in range(1, max_retries + 1):
             activation_id = None
             try:
-                activation_id, phone = sms_provider.acquire_number(http)
+                activation_id, phone = sms_provider.acquire_number(
+                    http, settings=sms_settings
+                )
                 logger.info("[Codex][Browser] 手机验证尝试 %s/%s，provider=%s，号码=+%s", attempt, max_retries, provider, phone)
                 logger.info("[Codex][Browser] 准备手机号输入页，重新设置新手机号")
                 _ensure_add_phone_input(driver, reason=f"attempt-{attempt}")
@@ -1107,7 +1115,7 @@ def _do_phone_verification_if_present(driver) -> None:
                 sms_provider.set_status(activation_id, 1, http=http)
                 logger.info(
                     "[Codex][Browser] 短信已发送，开始轮询验证码 activation_id=%s wait=%ss interval=%ss",
-                    activation_id, sms_provider._cfg.SMS_CODE_WAIT, sms_provider._cfg.SMS_POLL_INTERVAL
+                    activation_id, sms_settings.code_wait, sms_settings.poll_interval
                 )
                 sms_code = sms_provider.wait_for_sms_code(activation_id, http)
                 logger.info("[Codex][Browser] 手机 OTP 收到：%s", sms_code)
@@ -1120,7 +1128,13 @@ def _do_phone_verification_if_present(driver) -> None:
                 otp_outcome = _wait_after_phone_otp_submit(driver, timeout=25)
                 logger.info("[Codex][Browser] 手机 OTP 提交后状态：%s", otp_outcome)
                 sms_provider.complete(activation_id, http)
+                if email:
+                    db.update_account_codex_phone_verified(email, True, source=provider)
                 return
+            except sms_provider.SmsFatalProviderError:
+                if activation_id:
+                    sms_provider.cancel(activation_id, http)
+                raise
             except Exception as exc:
                 last_err = exc
                 err_text = str(exc) or ""
@@ -1166,6 +1180,7 @@ def _do_phone_verification_if_present(driver) -> None:
             http.close()
         except Exception:
             pass
+        sms_context.__exit__(None, None, None)
 
 
 def _finish_consent_workspace(driver) -> str:
@@ -1294,10 +1309,11 @@ def _run_roxy_codex_oauth_once(
         _fill_email_and_otp(driver, email, otp_provider, auth_url)
         human_delay("api")
         logger.info("[Codex][Browser] 检查是否需要手机号验证")
-        _do_phone_verification_if_present(driver)
+        _do_phone_verification_if_present(driver, email=email)
         logger.info("[Codex][Browser] 手机验证处理完成/无需处理，等待授权确认和 callback")
         callback_url = _finish_consent_workspace(driver)
         code = proto._extract_code(callback_url, state)
+        db.update_account_codex_phone_verified(email, True, source="oauth_callback")
         logger.info("[Codex][Browser] 已捕获 callback code：%s...", code[:24])
 
         if auth_source == "cpa":

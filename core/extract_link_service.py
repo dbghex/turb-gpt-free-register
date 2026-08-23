@@ -10,6 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from urllib.parse import quote, urlencode
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 try:
@@ -47,14 +48,25 @@ def _int_setting(name: str, default: int, lower: int, upper: int) -> int:
     return max(lower, min(upper, value))
 
 
-SUPPORTED_LINK_TYPES = {"pix", "upi", "kakao_pay", "ideal"}
+SUPPORTED_LINK_TYPES = {"pix", "upi", "kakao_pay", "kakao", "ideal", "gcash"}
+
+_LINK_TYPE_MAP = {"pix": "upi", "upi": "upi", "kakao_pay": "kakao", "kakao": "kakao", "ideal": "ideal", "gcash": "gcash"}
 
 
 def _link_type(value: str | None = None) -> str:
     t = str(value or _runtime_setting("EXTRACT_LINK_TYPE", "pix") or "pix").strip().lower()
     if t not in SUPPORTED_LINK_TYPES:
-        raise ValueError("提链类型无效，仅支持 pix / upi / kakao_pay / ideal")
-    return t
+        raise ValueError("提链类型无效，仅支持 pix / upi / kakao_pay / kakao / ideal / gcash")
+    return _LINK_TYPE_MAP[t]
+
+
+def resolve_link_type(value: str | None = None) -> str:
+    """返回请求实际使用的规范化提链类型。
+
+    WebUI 的资格门禁与真正入队必须使用同一次解析结果，避免页面按 GCash
+    放行、后台却因为配置变化而提交成其他支付方式。
+    """
+    return _link_type(value)
 
 
 def _api_base() -> str:
@@ -77,6 +89,139 @@ _EXECUTOR = ThreadPoolExecutor(max_workers=_WORKERS, thread_name_prefix="extract
 _QUEUE_SLOTS = threading.BoundedSemaphore(_QUEUE_LIMIT)
 
 
+_ERROR_MESSAGES = {
+    "zero_trial_ineligible": "GCash 不符合当前 0 元试用资格",
+    "eligibility_proof_invalid": "0 元试用资格证明无效或已过期",
+    "eligibility_check_unavailable": "服务端 0 元资格检测暂时不可用，请稍后重试",
+    "gcash_payment_method_unavailable": "当前优惠结账不支持 GCash",
+    "gcash_currency_mismatch": "GCash 结账币种不匹配",
+    "link_type_unsupported": "提链服务不支持该支付方式",
+    "link_type_disabled": "该支付方式当前已停用",
+    "card_key_invalid": "CDK 无效或已失效",
+    "card_key_exhausted": "CDK 可用次数已耗尽",
+}
+
+
+class ExtractLinkApiError(RuntimeError):
+    """提链 API 错误，保留稳定码并提供可直接展示的消息。"""
+
+    def __init__(self, *, status_code: int | None = None, code: str = "", detail: str = "", payload=None):
+        self.status_code = status_code
+        self.code = str(code or "").strip()
+        self.detail = str(detail or "").strip()
+        self.payload = payload
+        super().__init__(self.user_message)
+
+    @property
+    def user_message(self) -> str:
+        if self.code in _ERROR_MESSAGES:
+            return _ERROR_MESSAGES[self.code]
+        if self.detail:
+            return self.detail
+        if self.code:
+            return self.code
+        if self.status_code:
+            return f"提链服务请求失败（HTTP {self.status_code}）"
+        return "提链服务请求失败"
+
+
+def _error_code_from_value(value) -> str:
+    if isinstance(value, dict):
+        for key in ("code", "error_code", "reason", "type"):
+            item = value.get(key)
+            if item and isinstance(item, (str, int)):
+                return str(item).strip()
+        for key in ("task", "failure", "error", "detail"):
+            nested = value.get(key)
+            code = _error_code_from_value(nested)
+            if code:
+                return code
+    return ""
+
+
+def _error_detail_from_value(value) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, list):
+        parts = [_error_detail_from_value(item) for item in value]
+        return "; ".join(part for part in parts if part)
+    if not isinstance(value, dict):
+        return ""
+    for key in ("message", "detail", "reason", "error", "msg", "description"):
+        item = value.get(key)
+        if isinstance(item, str) and item.strip():
+            return item.strip()
+        nested = _error_detail_from_value(item)
+        if nested:
+            return nested
+    return ""
+
+
+def _error_parts(data) -> tuple[str, str]:
+    """从 FastAPI/任务状态的多种错误结构提取 code/detail。"""
+    if data is None:
+        return "", ""
+    if isinstance(data, str):
+        return data.strip(), data.strip()
+    if isinstance(data, list):
+        detail = _error_detail_from_value(data)
+        return "", detail
+    if not isinstance(data, dict):
+        return "", str(data)
+
+    candidates = [data]
+    task = data.get("task")
+    if isinstance(task, dict):
+        candidates.append(task)
+    for key in ("detail", "error", "failure", "reason"):
+        value = data.get(key)
+        if isinstance(value, dict):
+            candidates.append(value)
+        elif isinstance(value, (str, int, float)):
+            candidates.append({"detail": value})
+    for candidate in candidates:
+        code = _error_code_from_value(candidate)
+        detail = _error_detail_from_value(candidate)
+        if code and code not in {detail, "error"}:
+            return code, detail or code
+    detail = _error_detail_from_value(data)
+    if detail:
+        return detail, detail
+    return "", json.dumps(data, ensure_ascii=False)[:500]
+
+
+def _api_error(*, status_code: int | None, payload) -> ExtractLinkApiError:
+    code, detail = _error_parts(payload)
+    # FastAPI commonly returns {"detail": "stable_code"}; use that code as
+    # the stable identifier while retaining the original detail.
+    if not code and detail:
+        code = detail if detail in _ERROR_MESSAGES else ""
+    return ExtractLinkApiError(status_code=status_code, code=code, detail=detail, payload=payload)
+
+
+def _response_payload(resp) -> object:
+    try:
+        return resp.json()
+    except Exception:
+        text = getattr(resp, "text", "") or ""
+        return {"detail": text[:500]} if text else {}
+
+
+def _http_error_payload(exc: HTTPError) -> object:
+    try:
+        raw = exc.read().decode("utf-8", "replace")
+        if raw:
+            try:
+                return json.loads(raw)
+            except Exception:
+                return {"detail": raw[:500]}
+    except Exception:
+        pass
+    return {"detail": str(exc)}
+
+
 def queue_settings() -> dict:
     return {"workers": _WORKERS, "queue_limit": _QUEUE_LIMIT}
 
@@ -94,17 +239,31 @@ def query_cdk(*, cdk: str | None = None) -> dict:
     s = _session()
     try:
         if s is None:
+            body = json.dumps({"cdk": code}).encode("utf-8")
+            req = Request(f"{base}/api/card-key/verify", data=body,
+                          headers={"Accept": "application/json", "Content-Type": "application/json"}, method="POST")
+            try:
+                with urlopen(req, timeout=timeout) as resp:
+                    payload = json.loads(resp.read().decode("utf-8", "replace") or "{}")
+                return payload if isinstance(payload, dict) else {}
+            except HTTPError as exc:
+                if exc.code != 404:
+                    raise _api_error(status_code=exc.code, payload=_http_error_payload(exc)) from exc
+            except Exception:
+                pass
             req = Request(f"{base}/api/cdk?{urlencode({'code': code})}", headers={"Accept": "application/json"})
             with urlopen(req, timeout=timeout) as resp:
                 payload = json.loads(resp.read().decode("utf-8", "replace") or "{}")
             return payload if isinstance(payload, dict) else {}
-        resp = s.get(f"{base}/api/cdk?{urlencode({'code': code})}", timeout=timeout)
+        resp = s.post(f"{base}/api/card-key/verify", json={"cdk": code}, timeout=timeout)
+        if resp.status_code == 404:
+            resp = s.get(f"{base}/api/cdk?{urlencode({'code': code})}", timeout=timeout)
         try:
             payload = resp.json()
         except Exception:
             payload = {"error": (resp.text or "")[:300]}
         if resp.status_code < 200 or resp.status_code >= 300:
-            raise RuntimeError(payload.get("error") or f"HTTP {resp.status_code}")
+            raise _api_error(status_code=resp.status_code, payload=payload)
         return payload if isinstance(payload, dict) else {}
     finally:
         try:
@@ -116,31 +275,41 @@ def query_cdk(*, cdk: str | None = None) -> dict:
 def _create_extract_job(*, token: str, link_type: str, cdk: str) -> dict:
     base = _api_base()
     timeout = _int_setting("EXTRACT_LINK_REQUEST_TIMEOUT", 30, 5, 300)
-    payload = {"link_type": _link_type(link_type), "cdk": _cdk(cdk), "token": token}
+    payload = {"link_type": _link_type(link_type), "cdk": _cdk(cdk), "access_token": token,
+               "device_id": "", "user_agent": "", "eligibility_proof": "", "options": {}}
     s = _session()
     try:
         if s is None:
             body = json.dumps(payload).encode("utf-8")
             req = Request(
-                f"{base}/api/extract",
+                f"{base}/api/extractions",
                 data=body,
                 headers={"Accept": "application/json", "Content-Type": "application/json"},
                 method="POST",
             )
-            with urlopen(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8", "replace") or "{}")
-            if not isinstance(data, dict) or not data.get("job_id"):
-                raise RuntimeError(f"提链服务未返回 job_id: {data}")
+            try:
+                with urlopen(req, timeout=timeout) as resp:
+                    data = json.loads(resp.read().decode("utf-8", "replace") or "{}")
+            except HTTPError as exc:
+                raise _api_error(status_code=exc.code, payload=_http_error_payload(exc)) from exc
+            if isinstance(data, dict) and not (data.get("task_id") or data.get("job_id") or data.get("id")) and isinstance(data.get("accepted"), list) and data["accepted"]:
+                data.update(data["accepted"][0] if isinstance(data["accepted"][0], dict) else {})
+            if not isinstance(data, dict) or not (data.get("task_id") or data.get("job_id") or data.get("id")):
+                raise RuntimeError(f"提链服务未返回 task_id: {data}")
+            data.setdefault("job_id", data.get("task_id") or data.get("id"))
             return data
-        resp = s.post(f"{base}/api/extract", json=payload, timeout=timeout)
+        resp = s.post(f"{base}/api/extractions", json=payload, timeout=timeout)
         try:
             data = resp.json()
         except Exception:
             data = {"error": (resp.text or "")[:300]}
         if resp.status_code < 200 or resp.status_code >= 300:
-            raise RuntimeError(data.get("error") or f"HTTP {resp.status_code}")
-        if not isinstance(data, dict) or not data.get("job_id"):
-            raise RuntimeError(f"提链服务未返回 job_id: {data}")
+            raise _api_error(status_code=resp.status_code, payload=data)
+        if isinstance(data, dict) and not (data.get("task_id") or data.get("job_id") or data.get("id")) and isinstance(data.get("accepted"), list) and data["accepted"]:
+            data.update(data["accepted"][0] if isinstance(data["accepted"][0], dict) else {})
+        if not isinstance(data, dict) or not (data.get("task_id") or data.get("job_id") or data.get("id")):
+            raise RuntimeError(f"提链服务未返回 task_id: {data}")
+        data.setdefault("job_id", data.get("task_id") or data.get("id"))
         return data
     finally:
         try:
@@ -150,80 +319,40 @@ def _create_extract_job(*, token: str, link_type: str, cdk: str) -> dict:
 
 
 def _iter_sse_events(*, job_id: str, cdk: str):
+    """兼容旧 SSE 名称，实际轮询 ai.pupux.xyz extraction 状态接口。"""
     base = _api_base()
     timeout = _int_setting("EXTRACT_LINK_EVENT_TIMEOUT", 180, 30, 900)
-    url = f"{base}/api/jobs/{quote(job_id, safe='')}/events?{urlencode({'cdk': _cdk(cdk)})}"
+    interval = min(5.0, max(0.5, _int_setting("EXTRACT_LINK_POLL_INTERVAL", 2, 1, 10)))
     s = _session()
     try:
-        if s is None:
-            req = Request(url, headers={"Accept": "text/event-stream"})
-            with urlopen(req, timeout=timeout) as resp:
-                event = "message"
-                data_lines: list[str] = []
-                for raw in resp:
-                    line = raw.decode("utf-8", "replace").rstrip("\r\n")
-                    if line == "":
-                        if data_lines:
-                            text = "\n".join(data_lines)
-                            try:
-                                data = json.loads(text)
-                            except Exception:
-                                data = {"raw": text}
-                            yield event, data
-                        event = "message"
-                        data_lines = []
-                        continue
-                    if line.startswith(":"):
-                        continue
-                    if line.startswith("event:"):
-                        event = line.split(":", 1)[1].strip() or "message"
-                    elif line.startswith("data:"):
-                        data_lines.append(line.split(":", 1)[1].lstrip())
-                if data_lines:
-                    text = "\n".join(data_lines)
-                    try:
-                        data = json.loads(text)
-                    except Exception:
-                        data = {"raw": text}
-                    yield event, data
-            return
-        resp = s.get(url, timeout=timeout, stream=True)
-        if resp.status_code < 200 or resp.status_code >= 300:
-            raise RuntimeError(f"监听提链事件失败 HTTP {resp.status_code}: {(resp.text or '')[:300]}")
-        event = "message"
-        data_lines: list[str] = []
-        for raw in resp.iter_lines():
-            if raw is None:
-                continue
-            if isinstance(raw, bytes):
-                line = raw.decode("utf-8", "replace")
+        started = time.monotonic()
+        while time.monotonic() - started < timeout:
+            url = f"{base}/api/extractions/{quote(str(job_id), safe='')}"
+            if s is None:
+                req = Request(url, headers={"Accept": "application/json"})
+                try:
+                    with urlopen(req, timeout=min(30, timeout)) as resp:
+                        data = json.loads(resp.read().decode("utf-8", "replace") or "{}")
+                except HTTPError as exc:
+                    raise _api_error(status_code=exc.code, payload=_http_error_payload(exc)) from exc
             else:
-                line = str(raw)
-            line = line.rstrip("\r")
-            if line == "":
-                if data_lines:
-                    text = "\n".join(data_lines)
-                    try:
-                        data = json.loads(text)
-                    except Exception:
-                        data = {"raw": text}
-                    yield event, data
-                event = "message"
-                data_lines = []
-                continue
-            if line.startswith(":"):
-                continue
-            if line.startswith("event:"):
-                event = line.split(":", 1)[1].strip() or "message"
-            elif line.startswith("data:"):
-                data_lines.append(line.split(":", 1)[1].lstrip())
-        if data_lines:
-            text = "\n".join(data_lines)
-            try:
-                data = json.loads(text)
-            except Exception:
-                data = {"raw": text}
-            yield event, data
+                resp = s.get(url, timeout=min(30, timeout))
+                data = _response_payload(resp)
+                if resp.status_code < 200 or resp.status_code >= 300:
+                    raise _api_error(status_code=resp.status_code, payload=data)
+            if not isinstance(data, dict): data = {"raw": data}
+            if isinstance(data.get("task"), dict):
+                data = data["task"]
+            status = str(data.get("status") or data.get("state") or "").lower()
+            if status in {"failed", "error", "cancelled", "canceled"}:
+                yield "error", data; return
+            result = data.get("result") or data.get("payload")
+            if status in {"success", "succeeded", "completed", "done", "finished"}:
+                yield "result", {"result": result if isinstance(result, dict) else data}; yield "done", data; return
+            msg = data.get("message") or data.get("detail")
+            if msg: yield "log", {"message": msg}
+            time.sleep(interval)
+        raise TimeoutError("提链任务轮询超时")
     finally:
         try:
             s.close()
@@ -233,30 +362,18 @@ def _iter_sse_events(*, job_id: str, cdk: str):
 
 def _extract_error_message(data) -> str:
     """尽量从提链服务返回的任意错误结构中提取用户可读原因。"""
-    if data is None:
-        return ""
-    if isinstance(data, str):
-        return data.strip()
-    if not isinstance(data, dict):
-        return str(data)
-    err = data.get("error")
-    if isinstance(err, dict):
-        for key in ("message", "detail", "reason", "error", "msg", "description"):
-            value = err.get(key)
-            if value:
-                return str(value).strip()
-        return json.dumps(err, ensure_ascii=False)[:500]
-    if err:
-        return str(err).strip()
-    for key in ("message", "detail", "reason", "msg", "description", "raw"):
-        value = data.get(key)
-        if value:
-            return str(value).strip()
-    return json.dumps(data, ensure_ascii=False)[:500]
+    code, detail = _error_parts(data)
+    if code in _ERROR_MESSAGES:
+        return _ERROR_MESSAGES[code]
+    return detail or code
 
 
 def _format_failure_reason(exc: Exception, logs: list[str] | None = None, last_event: dict | None = None) -> str:
-    reason = f"{type(exc).__name__}: {str(exc)}".strip()
+    reason = str(exc).strip()
+    if isinstance(exc, ExtractLinkApiError):
+        reason = exc.user_message
+    elif reason:
+        reason = f"提链请求失败：{reason}"
     if (not str(exc).strip()) and logs:
         reason = str(logs[-1])
     if last_event and "提链事件流结束但未返回 result" in reason:
@@ -264,6 +381,28 @@ def _format_failure_reason(exc: Exception, logs: list[str] | None = None, last_e
         if extracted:
             reason = f"提链事件流结束但未返回 result；最后事件 {last_event.get('event')}: {extracted}"
     return reason[:500]
+
+
+def _normalize_result(result: dict, *, link_type: str) -> dict:
+    """把 pupux extraction/workbench 结果统一成 WebUI 现有字段。"""
+    src = dict(result or {})
+    out = dict(src)
+    out.setdefault("long_url", src.get("payment_url") or src.get("upi_hosted_instructions_url")
+                   or src.get("hosted_instructions_url") or src.get("checkout_url") or src.get("url"))
+    out.setdefault("copy_paste", src.get("copy_paste") or src.get("copyPaste") or src.get("payment_url"))
+    qr = src.get("qr_image") or src.get("qr")
+    if isinstance(qr, dict) and qr.get("data"):
+        media = qr.get("media_type") or "image/png"
+        qr = f"data:{media};base64,{qr['data']}" if qr.get("encoding") == "base64" else qr.get("data")
+    if qr:
+        if str(qr).startswith("data:image/svg") or str(qr).lower().endswith(".svg"):
+            out.setdefault("image_url_svg", qr)
+        else:
+            out.setdefault("image_url_png", qr)
+    out.setdefault("payment_method", src.get("payment_method") or src.get("link_type") or link_type)
+    out.setdefault("payment_link_type", src.get("payment_link_type") or src.get("link_type") or link_type)
+    out.setdefault("expires_at", src.get("expires_at") or src.get("expiry") or src.get("expiresAt"))
+    return out
 
 
 def _run_extract(*, account_id: int, email: str, access_token: str, link_type: str, cdk: str, trigger: str) -> dict:
@@ -299,13 +438,16 @@ def _run_extract(*, account_id: int, email: str, access_token: str, link_type: s
                 result = (data or {}).get("result") if isinstance(data, dict) else None
                 if not isinstance(result, dict):
                     result = {}
+                result = _normalize_result(result, link_type=link_type)
                 final = {"ok": True, "status": "success", "job_id": job_id, "link_type": link_type, "result": result, "logs": logs}
                 db.update_account_extract(account_id, final)
                 logger.info("[提链] 成功: %s type=%s job=%s", email, link_type, job_id)
                 return final
             elif event == "error":
-                msg = _extract_error_message(data)
-                raise RuntimeError(msg or "提链任务失败")
+                api_exc = _api_error(status_code=None, payload=data)
+                if api_exc.code or api_exc.detail:
+                    raise api_exc
+                raise RuntimeError("提链任务失败")
             elif event == "done":
                 break
         raise RuntimeError(f"提链事件流结束但未返回 result: {last_event}")
@@ -318,6 +460,8 @@ def _run_extract(*, account_id: int, email: str, access_token: str, link_type: s
             "error": reason,
             "message": reason,
         }
+        if isinstance(exc, ExtractLinkApiError) and exc.code:
+            result["error_code"] = exc.code
         try:
             db.update_account_extract(account_id, result)
         except Exception:
@@ -329,10 +473,10 @@ def _run_extract(*, account_id: int, email: str, access_token: str, link_type: s
 
 
 def enqueue_account_extract(*, account_id: int, email: str, access_token: str, trigger: str = "manual", link_type: str | None = None, cdk: str | None = None) -> dict:
+    lt = _link_type(link_type)
     if not _QUEUE_SLOTS.acquire(blocking=False):
         return {"accepted": False, "busy": False, "error": "提链队列已满"}
     try:
-        lt = _link_type(link_type)
         code = _cdk(cdk)
         if not db.claim_account_extract(account_id, trigger=trigger, link_type=lt):
             _QUEUE_SLOTS.release()

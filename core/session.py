@@ -17,6 +17,7 @@ from config import (
     SEC_CH_UA_BITNESS, SEC_CH_UA_MODEL, SEND_HIGH_ENTROPY_CLIENT_HINTS,
     ACCEPT_LANGUAGE, IMPERSONATE, OAI_CLIENT_BUILD_NUMBER, OAI_CLIENT_VERSION,
     REQUEST_TIMEOUT, pick_proxy, pick_browser_profile, validate_browser_profile,
+    normalize_proxy_url,
 )
 
 
@@ -47,9 +48,9 @@ class BrowserSession:
         # proxy=""    → 禁用代理（直连）
         # proxy="..." → 使用指定代理
         if proxy is None:
-            self.proxy = pick_proxy()
+            self.proxy = normalize_proxy_url(pick_proxy())
         else:
-            self.proxy = proxy
+            self.proxy = normalize_proxy_url(proxy)
 
         # 生成设备ID（oai-did），整个注册流程复用
         self.device_id = str(uuid.uuid4())

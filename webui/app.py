@@ -11,19 +11,40 @@ Flask 本地控制台。
 默认绑定 127.0.0.1，仅本地访问。
 """
 import logging
+import re
 import threading
 import time
 import uuid
-from urllib.parse import urlparse
+from urllib.parse import quote, quote_plus, urlparse
 
 from flask import Flask, Response, jsonify, make_response, render_template, request
 
-from core import codex_retry_service, db, plan_check_service, extract_link_service, codex_agent_service, live_check_service
+from core import codex_retry_service, db, plan_check_service, extract_link_service, codex_agent_service, live_check_service, gcash_eligibility_service
 from webui.auth import init_auth, register_auth_routes
 from core import registration_service as svc
 from webui import config_editor
 
 logger = logging.getLogger(__name__)
+
+
+def _registration_submit_error(exc: Exception):
+    """把入队前可预期错误转换为可操作的 JSON，而不是 Flask 500 页面。"""
+    from config.proxy import ProxyPoolError, registration_proxy_pool_status
+    from core import sms_provider
+
+    if isinstance(exc, ProxyPoolError):
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+            "proxy_pool": registration_proxy_pool_status(),
+        }), 409
+    if isinstance(exc, sms_provider.SmsConfigurationError):
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    if isinstance(exc, sms_provider.SmsNoNumbersError):
+        return jsonify({"ok": False, "error": str(exc)}), 409
+    if isinstance(exc, sms_provider.SmsProviderError):
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    return None
 
 def _pool_source_arg(default: str = "outlook") -> str:
     src = (request.args.get("source") or "").strip()
@@ -72,6 +93,148 @@ def _paginate_items(items: list[dict], *, page: int, page_size: int) -> dict:
     }
 
 
+def _hero_request_value(data: dict, *names: str, default=None):
+    """取 Hero 辅助接口的请求参数；空字符串视为未填写并回退默认值。"""
+    for name in names:
+        if name not in data or data.get(name) is None:
+            continue
+        value = data.get(name)
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                continue
+        return value
+    return default
+
+
+def _hero_client_from_request(data: dict):
+    """根据当前请求构造 Hero 客户端。
+
+    WebUI 在用户尚未点击“保存”时会把输入框中的 api_key/base 直接放在请求体；
+    未提供时回退到已加载配置。这里不把密钥写入日志或返回值。
+    """
+    from config import codex as codex_config
+
+    api_base = _hero_request_value(
+        data, "api_base", "base_url", "HERO_SMS_API_BASE",
+        default=getattr(codex_config, "HERO_SMS_API_BASE", "https://hero-sms.com/stubs/handler_api.php"),
+    )
+    api_key = _hero_request_value(
+        data, "api_key", "HERO_SMS_API_KEY",
+        default=getattr(codex_config, "HERO_SMS_API_KEY", ""),
+    )
+    timeout_raw = _hero_request_value(
+        data, "timeout", "request_timeout", "SMS_REQUEST_TIMEOUT",
+        default=getattr(codex_config, "SMS_REQUEST_TIMEOUT", 30),
+    )
+    try:
+        timeout = max(1, min(180, int(timeout_raw)))
+    except (TypeError, ValueError):
+        timeout = 30
+
+    if not str(api_key or "").strip():
+        raise ValueError("未配置 HeroSMS API Key")
+    if not str(api_base or "").strip():
+        raise ValueError("未配置 HeroSMS API 地址")
+
+    from core.hero_sms_client import HeroSmsClient
+    # 使用协调契约的关键字参数，避免 api_base/api_key 顺序误传。
+    client = HeroSmsClient(api_base=str(api_base).strip(), api_key=str(api_key).strip(), timeout=timeout)
+    return client, str(api_key).strip()
+
+
+def _hero_secret_candidates(data: dict) -> tuple[str, ...]:
+    """返回当前请求中可能使用过的 Hero key（仅供本地脱敏，不会输出）。"""
+    try:
+        from config import codex as codex_config
+        configured = getattr(codex_config, "HERO_SMS_API_KEY", "")
+    except Exception:
+        configured = ""
+    values = [
+        data.get("api_key"), data.get("HERO_SMS_API_KEY"), configured,
+    ]
+    return tuple(str(value).strip() for value in values if str(value or "").strip())
+
+
+def _hero_scrub(value, secrets: tuple[str, ...] = ()):
+    """递归移除/替换可能意外出现在 Hero 响应或异常中的密钥。"""
+    secret_values = set()
+    for secret in secrets:
+        secret = str(secret or "").strip()
+        if secret:
+            secret_values.update((secret, quote(secret, safe=""), quote_plus(secret)))
+
+    def scrub(item):
+        if isinstance(item, dict):
+            out = {}
+            for key, nested in item.items():
+                key_text = re.sub(r"[^a-z0-9]", "", str(key).lower())
+                if key_text in {"apikey", "xapikey", "herosmsapikey"}:
+                    out[str(key)] = "[REDACTED]"
+                    continue
+                out[key] = scrub(nested)
+            return out
+        if isinstance(item, (list, tuple)):
+            return [scrub(nested) for nested in item]
+        if isinstance(item, str):
+            result = item
+            for secret in sorted(secret_values, key=len, reverse=True):
+                result = result.replace(secret, "[REDACTED]")
+            return re.sub(
+                r"(?i)(api_key=)[^&\s'\"<>]+",
+                r"\1[REDACTED]",
+                result,
+            )
+        return item
+
+    return scrub(value)
+
+
+def _hero_close_quietly(client) -> None:
+    """关闭一次性 Hero 客户端，不让清理异常覆盖真实查询结果。"""
+    if client is None:
+        return
+    try:
+        client.close()
+    except Exception:
+        logger.debug("关闭 HeroSMS 查询客户端失败", exc_info=True)
+
+
+def _hero_error_payload(exc: Exception, secrets: tuple[str, ...] = ()) -> tuple[dict, int]:
+    """把 Hero 客户端异常转换为稳定、脱敏的 WebUI 响应。"""
+    code = str(getattr(exc, "code", "") or "").strip()
+    retryable = getattr(exc, "retryable", None)
+    payload = {
+        "ok": False,
+        "error": _hero_scrub(str(exc), secrets),
+    }
+    if code:
+        payload["code"] = _hero_scrub(code, secrets)
+    if retryable is not None:
+        payload["retryable"] = bool(retryable)
+    for attr in ("details", "info"):
+        val = getattr(exc, attr, None)
+        if val not in (None, "", {}, []):
+            payload[attr] = _hero_scrub(val, secrets)
+
+    http_status = getattr(exc, "http_status", None)
+    try:
+        http_status = int(http_status) if http_status is not None else 0
+    except (TypeError, ValueError):
+        http_status = 0
+    if http_status in (400, 401, 402, 403, 404, 409, 422):
+        status = 400
+    elif http_status >= 500:
+        status = 502
+    else:
+        # 配置/参数类 Hero 错误能在页面直接修正；网络/未知错误返回网关失败。
+        status = 400 if code in {
+            "BAD_KEY", "NO_KEY", "BAD_SERVICE", "WRONG_COUNTRY", "WRONG_MAX_PRICE",
+            "NO_BALANCE", "BANNED", "CHANNELS_LIMIT",
+        } else 502
+    return payload, status
+
+
 def _compact_account_for_list(row: dict) -> dict:
     """账号列表轻量对象：只返回当前表格渲染和按钮判断必需字段。
 
@@ -93,6 +256,8 @@ def _compact_account_for_list(row: dict) -> dict:
         "user_name", "email_source", "note", "archived", "created_at",
         "plan_type", "current_plan_type", "plus_trial_eligible",
         "plan_check_status", "codex_status", "codex_agent_status",
+        "gcash_eligibility_status", "gcash_eligibility_ok", "gcash_eligibility_outcome",
+        "gcash_eligibility_reason", "gcash_eligibility_message", "gcash_eligibility_checked_at",
     ):
         if key in row:
             out[key] = row.get(key)
@@ -110,8 +275,11 @@ def _compact_account_for_list(row: dict) -> dict:
         # 查活状态。
         "live_check_status", "live_check_error", "live_checked_at",
         "live_check_device_id", "live_check_proxy_used", "live_check_fingerprint_text",
+        "gcash_eligibility_valid", "gcash_eligibility_payment_method_available",
+        "gcash_eligibility_checkout_amount_is_zero", "gcash_eligibility_eligible",
+        "gcash_eligibility_retryable", "gcash_eligibility_error",
         # 提链成功/失败时才需要。
-        "extract_link_status", "extract_link_type", "extract_link_message", "extract_link_error",
+        "extract_link_status", "extract_link_type", "extract_link_message", "extract_link_error", "extract_link_error_code",
         "extract_link_long_url", "extract_link_copy_paste", "extract_link_image_url_png",
         "extract_link_image_url_svg", "extract_link_expires_at",
         # Codex / Agent 状态提示。
@@ -215,6 +383,9 @@ def create_app(auth_code: str | None = None) -> Flask:
     recovered_plan_checks = db.recover_interrupted_plan_checks()
     if recovered_plan_checks:
         logger.warning("已恢复 %s 个因 WebUI 重启中断的套餐查询状态", recovered_plan_checks)
+    recovered_gcash_checks = db.recover_interrupted_gcash_eligibility()
+    if recovered_gcash_checks:
+        logger.warning("已恢复 %s 个因 WebUI 重启中断的 GCash 资格查询状态", recovered_gcash_checks)
     recovered_extract_links = db.recover_interrupted_extract_links()
     if recovered_extract_links:
         logger.warning("已恢复 %s 个因 WebUI 重启中断的提链状态", recovered_extract_links)
@@ -274,6 +445,7 @@ def create_app(auth_code: str | None = None) -> Flask:
             "domain_available": domain_pool.get("available", 0),
             "domain_used": domain_pool.get("used", 0),
             "domain_failed": domain_pool.get("failed", 0),
+            "extract_link_type": extract_link_service.resolve_link_type(),
         })
 
     # ----------------------------------------------------------
@@ -297,7 +469,13 @@ def create_app(auth_code: str | None = None) -> Flask:
             offset = (page - 1) * page_size
             result = db.list_accounts_page(limit=page_size, offset=offset, archived=archived, plan_filter=plan_filter, q=q, date_from=date_from, date_to=date_to)
             result["items"] = [_compact_account_for_list(r) for r in (result.get("items") or [])]
-            result.update({"ok": True, "page": page, "page_size": page_size, "compact": True})
+            result.update({
+                "ok": True,
+                "page": page,
+                "page_size": page_size,
+                "compact": True,
+                "extract_link_type": extract_link_service.resolve_link_type(),
+            })
             return jsonify(result)
         return jsonify(db.list_accounts(limit=limit, archived=archived, plan_filter=plan_filter, q=q, date_from=date_from, date_to=date_to))
 
@@ -319,6 +497,7 @@ def create_app(auth_code: str | None = None) -> Flask:
         else:
             snapshot = db.list_account_plan_check_statuses(limit=max(1, min(5000, limit)), archived=archived, plan_filter=plan_filter, q=q)
         snapshot["queue"] = plan_check_service.queue_settings()
+        snapshot["extract_link_type"] = extract_link_service.resolve_link_type()
         return jsonify(snapshot)
 
 
@@ -601,6 +780,33 @@ def create_app(auth_code: str | None = None) -> Flask:
             return jsonify({"ok": False, **queued}), 503
         return jsonify({"ok": True, "started": True, **queued}), 202
 
+    @app.post("/api/accounts/check-gcash-eligibility")
+    def api_account_check_gcash_eligibility():
+        """查询单账号 GCash（PH/PHP）0 元试用资格。Body {account_id|id}."""
+        data = request.get_json(silent=True) or {}
+        acc_id = data.get("account_id") or data.get("id")
+        try:
+            acc = db.get_account(int(acc_id))
+        except (TypeError, ValueError):
+            acc = None
+        if not acc:
+            return jsonify({"ok": False, "error": "账号不存在"}), 404
+        token = str(acc.get("access_token") or "").strip()
+        if not token:
+            return jsonify({"ok": False, "error": "该账号没有 access_token，请先查活刷新 AT"}), 400
+        queued = gcash_eligibility_service.enqueue_account_gcash_eligibility(
+            account_id=int(acc.get("id")),
+            email=acc.get("email") or "",
+            access_token=token,
+            trigger="manual",
+        )
+        if queued.get("busy"):
+            return jsonify({"ok": False, **queued}), 409
+        if not queued.get("accepted"):
+            code = 400 if "CDK" in str(queued.get("error") or "") or "提链" in str(queued.get("error") or "") else 503
+            return jsonify({"ok": False, **queued}), code
+        return jsonify({"ok": True, "started": True, **queued}), 202
+
     @app.post("/api/accounts/check-plan-bulk")
     def api_accounts_check_plan_bulk():
         """批量把套餐查询加入统一后台队列。Body {account_ids:[...], proxy?, timezone_offset_min?}"""
@@ -675,9 +881,23 @@ def create_app(auth_code: str | None = None) -> Flask:
         except Exception as exc:
             return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 400
 
-    def _is_extract_eligible(acc: dict) -> bool:
+    def _is_gcash_extract_eligible(acc: dict) -> bool:
+        return bool(
+            acc.get("gcash_eligibility_status") == "success"
+            and acc.get("gcash_eligibility_ok") is True
+            and str(acc.get("gcash_eligibility_outcome") or "").strip().lower() == "eligible"
+        )
+
+    def _is_extract_eligible(acc: dict, link_type: str) -> bool:
         plan = str(acc.get("current_plan_type") or acc.get("plan_type") or "").lower()
-        return plan == "free" and bool(acc.get("plus_trial_eligible"))
+        plus_trial_eligible = plan == "free" and bool(acc.get("plus_trial_eligible"))
+        gcash_eligible = link_type == "gcash" and _is_gcash_extract_eligible(acc)
+        return plus_trial_eligible or gcash_eligible
+
+    def _extract_ineligible_message(link_type: str) -> str:
+        if link_type == "gcash":
+            return "GCash 提链要求账号为 free(可Plus试用)，或先执行查资格(GCash)并确认通过"
+        return "仅支持 free(可Plus试用) 账号提链；请先查询套餐确认资格"
 
     @app.post("/api/accounts/extract-link")
     def api_account_extract_link():
@@ -690,8 +910,12 @@ def create_app(auth_code: str | None = None) -> Flask:
             acc = None
         if not acc:
             return jsonify({"ok": False, "error": "账号不存在"}), 404
-        if not _is_extract_eligible(acc):
-            return jsonify({"ok": False, "error": "仅支持 free(可Plus试用) 账号提链；请先查询套餐确认资格"}), 400
+        try:
+            link_type = extract_link_service.resolve_link_type(data.get("link_type"))
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        if not _is_extract_eligible(acc, link_type):
+            return jsonify({"ok": False, "error": _extract_ineligible_message(link_type)}), 400
         token = (acc.get("access_token") or "").strip()
         if not token:
             return jsonify({"ok": False, "error": "该账号没有 access_token"}), 400
@@ -701,7 +925,7 @@ def create_app(auth_code: str | None = None) -> Flask:
                 email=acc.get("email") or "",
                 access_token=token,
                 trigger="manual",
-                link_type=data.get("link_type"),
+                link_type=link_type,
                 cdk=data.get("cdk"),
             )
         except Exception as exc:
@@ -722,6 +946,11 @@ def create_app(auth_code: str | None = None) -> Flask:
         if len(ids) > 500:
             return jsonify({"ok": False, "error": "单次最多提链 500 个账号"}), 400
 
+        try:
+            link_type = extract_link_service.resolve_link_type(data.get("link_type"))
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
         started = []
         busy = []
         failed = []
@@ -741,8 +970,8 @@ def create_app(auth_code: str | None = None) -> Flask:
                 skipped.append({"id": acc_id, "reason": "账号不存在"})
                 continue
             email = acc.get("email")
-            if not _is_extract_eligible(acc):
-                skipped.append({"id": acc_id, "email": email, "reason": "不是 free(可Plus试用)"})
+            if not _is_extract_eligible(acc, link_type):
+                skipped.append({"id": acc_id, "email": email, "reason": _extract_ineligible_message(link_type)})
                 continue
             token = (acc.get("access_token") or "").strip()
             if not token:
@@ -754,7 +983,7 @@ def create_app(auth_code: str | None = None) -> Flask:
                     email=email or "",
                     access_token=token,
                     trigger="manual_bulk",
-                    link_type=data.get("link_type"),
+                    link_type=link_type,
                     cdk=data.get("cdk"),
                 )
             except Exception as exc:
@@ -2149,13 +2378,22 @@ def create_app(auth_code: str | None = None) -> Flask:
                     "ok": False,
                     "error": "手动模式建议每次只跑 1 个任务（同一 REGISTER_EMAIL）。请把数量设为 1。",
                 }), 400
-            jobs = svc.submit_registration(count=count, workers=workers)
+            try:
+                jobs = svc.submit_registration(count=count, workers=workers)
+            except Exception as exc:
+                response = _registration_submit_error(exc)
+                if response is not None:
+                    return response
+                raise
+            for job in jobs:
+                job.pop("proxy_used", None)
             return jsonify({
                 "ok": True,
                 "submitted": len(jobs),
                 "jobs": jobs,
                 "warning": f"手动 OTP 模式：将使用 {reg_email}；验证码请在任务页提交",
                 "workers": workers,
+                "proxy_pool": __import__('config.proxy', fromlist=['registration_proxy_pool_status']).registration_proxy_pool_status(),
             })
         sources = parse_email_sources(_email_cfg.EMAIL_SOURCE)
         if "gptmail" in sources:
@@ -2234,8 +2472,17 @@ def create_app(auth_code: str | None = None) -> Flask:
             warning = ""
             if pool.get("available", 0) < count:
                 warning = f"可用邮箱仅 {pool.get('available', 0)} 个，少于任务数 {count}，不足的会失败"
-        jobs = svc.submit_registration(count=count, workers=workers)
-        return jsonify({"ok": True, "submitted": len(jobs), "jobs": jobs, "warning": warning, "workers": workers})
+        try:
+            jobs = svc.submit_registration(count=count, workers=workers)
+        except Exception as exc:
+            response = _registration_submit_error(exc)
+            if response is not None:
+                return response
+            raise
+        for job in jobs:
+            job.pop("proxy_used", None)
+        return jsonify({"ok": True, "submitted": len(jobs), "jobs": jobs, "warning": warning, "workers": workers,
+                        "proxy_pool": __import__('config.proxy', fromlist=['registration_proxy_pool_status']).registration_proxy_pool_status()})
 
     @app.get("/api/manual-otp/waiting")
     def api_manual_otp_waiting():
@@ -2415,6 +2662,103 @@ def create_app(auth_code: str | None = None) -> Flask:
     def api_config_get():
         return jsonify(config_editor.get_config())
 
+    # ----------------------------------------------------------
+    # HeroSMS 只读辅助接口
+    # ----------------------------------------------------------
+    # 这些接口只查询余额/国家/服务/价格，不会购买号码，也不会修改配置。
+    # api_key/api_base 可随请求提交，方便用户在尚未保存表单时先测试连接；
+    # 未提交时使用当前已加载的 Hero 配置。
+    @app.post("/api/sms/hero/balance")
+    def api_hero_balance():
+        data = request.get_json(silent=True) or {}
+        hero_secrets = _hero_secret_candidates(data)
+        client = None
+        try:
+            client, used_key = _hero_client_from_request(data)
+            balance = client.get_balance()
+            return jsonify(_hero_scrub({"ok": True, "balance": balance}, (used_key,)))
+        except ValueError as exc:
+            return jsonify(_hero_scrub({"ok": False, "error": str(exc)}, hero_secrets)), 400
+        except Exception as exc:
+            payload, status = _hero_error_payload(exc, hero_secrets)
+            logger.warning("HeroSMS 余额查询失败: %s", payload.get("error", ""))
+            return jsonify(payload), status
+        finally:
+            _hero_close_quietly(client)
+
+    @app.post("/api/sms/hero/countries")
+    def api_hero_countries():
+        data = request.get_json(silent=True) or {}
+        hero_secrets = _hero_secret_candidates(data)
+        client = None
+        try:
+            client, used_key = _hero_client_from_request(data)
+            countries = client.get_countries()
+            return jsonify(_hero_scrub({"ok": True, "countries": countries}, (used_key,)))
+        except ValueError as exc:
+            return jsonify(_hero_scrub({"ok": False, "error": str(exc)}, hero_secrets)), 400
+        except Exception as exc:
+            payload, status = _hero_error_payload(exc, hero_secrets)
+            logger.warning("HeroSMS 国家列表查询失败: %s", payload.get("error", ""))
+            return jsonify(payload), status
+        finally:
+            _hero_close_quietly(client)
+
+    @app.post("/api/sms/hero/services")
+    def api_hero_services():
+        data = request.get_json(silent=True) or {}
+        hero_secrets = _hero_secret_candidates(data)
+        client = None
+        try:
+            from config import codex as codex_config
+            country = _hero_request_value(
+                data, "country", "HERO_SMS_COUNTRY",
+                default=getattr(codex_config, "HERO_SMS_COUNTRY", ""),
+            )
+            lang = _hero_request_value(data, "lang", "language", default="cn") or "cn"
+            client, used_key = _hero_client_from_request(data)
+            services = client.get_services(country=str(country).strip() or None, lang=str(lang).strip() or "cn")
+            return jsonify(_hero_scrub({"ok": True, "services": services}, (used_key,)))
+        except ValueError as exc:
+            return jsonify(_hero_scrub({"ok": False, "error": str(exc)}, hero_secrets)), 400
+        except Exception as exc:
+            payload, status = _hero_error_payload(exc, hero_secrets)
+            logger.warning("HeroSMS 服务列表查询失败: %s", payload.get("error", ""))
+            return jsonify(payload), status
+        finally:
+            _hero_close_quietly(client)
+
+    @app.post("/api/sms/hero/prices")
+    def api_hero_prices():
+        data = request.get_json(silent=True) or {}
+        hero_secrets = _hero_secret_candidates(data)
+        client = None
+        try:
+            from config import codex as codex_config
+            service = _hero_request_value(
+                data, "service", "HERO_SMS_SERVICE",
+                default=getattr(codex_config, "HERO_SMS_SERVICE", ""),
+            )
+            country = _hero_request_value(
+                data, "country", "HERO_SMS_COUNTRY",
+                default=getattr(codex_config, "HERO_SMS_COUNTRY", ""),
+            )
+            if not str(service or "").strip():
+                raise ValueError("请先选择 HeroSMS 服务")
+            if not str(country or "").strip():
+                raise ValueError("请先选择 HeroSMS 国家")
+            client, used_key = _hero_client_from_request(data)
+            prices = client.get_prices(str(service).strip(), str(country).strip())
+            return jsonify(_hero_scrub({"ok": True, "prices": prices}, (used_key,)))
+        except ValueError as exc:
+            return jsonify(_hero_scrub({"ok": False, "error": str(exc)}, hero_secrets)), 400
+        except Exception as exc:
+            payload, status = _hero_error_payload(exc, hero_secrets)
+            logger.warning("HeroSMS 价格查询失败: %s", payload.get("error", ""))
+            return jsonify(payload), status
+        finally:
+            _hero_close_quietly(client)
+
     @app.post("/api/cloudmail/gen-token")
     def api_cloudmail_gen_token():
         """手动生成 CloudMail Authorization Token，并把本次填写的 CloudMail 配置一并写入 .env。"""
@@ -2510,6 +2854,11 @@ def create_app(auth_code: str | None = None) -> Flask:
         updates = data.get("updates") if isinstance(data.get("updates"), dict) else data
         if not isinstance(updates, dict) or not updates:
             return jsonify({"ok": False, "error": "无更新内容"}), 400
+        if "PROXY_POOL" in updates and data.get("proxy_pool_revision"):
+            from config.proxy import registration_proxy_pool_status
+            current_revision = registration_proxy_pool_status().get("revision")
+            if str(data.get("proxy_pool_revision")) != str(current_revision):
+                return jsonify({"ok": False, "error": "代理池已被其他任务更新，请刷新配置后再保存", "proxy_pool": registration_proxy_pool_status()}), 409
         try:
             result = config_editor.update_config(updates)
         except Exception as exc:
@@ -2531,6 +2880,7 @@ def create_app(auth_code: str | None = None) -> Flask:
             "ok": True,
             "updated": result["updated"],
             "ignored": result["ignored"],
+            "preserved": result.get("preserved", []),
             "reloaded": reload_ok,
             "note": (
                 "✅ 已保存并热加载，新值立即生效"
