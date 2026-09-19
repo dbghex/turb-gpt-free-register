@@ -51,16 +51,17 @@ class CodexPhoneStateTests(unittest.TestCase):
 
         with patch.object(codex_oauth._cfg, "CODEX_OAUTH_DRIVER", "protocol"), \
              patch.object(codex_oauth._cfg, "CODEX_AUTH_URL_SOURCE", "cpa"), \
-             patch.object(codex_oauth, "BrowserSession", return_value=object()), \
+             patch.object(codex_oauth, "BrowserSession", return_value=Mock()), \
              patch.object(codex_oauth, "_request_cpa_authorize_url", return_value={
                  "state": state,
                  "auth_url": f"https://auth.openai.com/oauth/authorize?state={state}",
              }), \
-             patch.object(codex_oauth, "network_preflight"), \
+             patch.object(codex_oauth, "_codex_auth_preflight"), \
              patch.object(codex_oauth, "human_delay"), \
              patch.object(codex_oauth, "_bootstrap_authorize"), \
-             patch.object(codex_oauth, "_submit_email"), \
-             patch.object(codex_oauth, "_submit_email_otp", return_value=consent_response), \
+             patch.object(codex_oauth, "_submit_email", return_value={"page": {"type": "email_verification"}}), \
+             patch.object(codex_oauth, "_account_registration_password", return_value=""), \
+             patch.object(codex_oauth, "_submit_email_otp", return_value=consent_response.payload), \
              patch.object(codex_oauth, "_known_codex_phone_verified", return_value=False), \
              patch.object(codex_oauth, "_select_workspace_and_get_callback", return_value=callback), \
              patch.object(codex_oauth, "_do_phone_verification", phone), \
@@ -93,16 +94,17 @@ class CodexPhoneStateTests(unittest.TestCase):
 
         with patch.object(codex_oauth._cfg, "CODEX_OAUTH_DRIVER", "protocol"), \
              patch.object(codex_oauth._cfg, "CODEX_AUTH_URL_SOURCE", "cpa"), \
-             patch.object(codex_oauth, "BrowserSession", return_value=object()), \
+             patch.object(codex_oauth, "BrowserSession", return_value=Mock()), \
              patch.object(codex_oauth, "_request_cpa_authorize_url", return_value={
                  "state": state,
                  "auth_url": f"https://auth.openai.com/oauth/authorize?state={state}",
              }), \
-             patch.object(codex_oauth, "network_preflight"), \
+             patch.object(codex_oauth, "_codex_auth_preflight"), \
              patch.object(codex_oauth, "human_delay"), \
              patch.object(codex_oauth, "_bootstrap_authorize"), \
-             patch.object(codex_oauth, "_submit_email"), \
-             patch.object(codex_oauth, "_submit_email_otp", return_value=phone_response), \
+             patch.object(codex_oauth, "_submit_email", return_value={"page": {"type": "email_verification"}}), \
+             patch.object(codex_oauth, "_account_registration_password", return_value=""), \
+             patch.object(codex_oauth, "_submit_email_otp", return_value=phone_response.payload), \
              patch.object(codex_oauth, "_known_codex_phone_verified", return_value=False), \
              patch.object(codex_oauth, "_do_phone_verification", side_effect=verify_phone), \
              patch.object(codex_oauth, "_select_workspace_and_get_callback", side_effect=select_callback), \
