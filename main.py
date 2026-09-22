@@ -457,18 +457,8 @@ def run_registration(
                 )
             human_delay("post_auth")
 
-        # ==================== 阶段7: 设置 2FA（受 config.ENABLE_2FA 控制）====================
+        # Password and 2FA are queued in order after save_account_data().
         totp_secret = None
-        if _twofa_cfg.ENABLE_2FA:
-            # 步骤14-20: 重认证（要再收一次邮箱 OTP）→ enroll TOTP → activate
-            try:
-                totp_secret = setup_2fa(session, email)
-            except Exception as exc:
-                logger.error(f"2FA 设置失败: {exc}")
-                logger.debug("2FA 错误详情:", exc_info=True)
-                logger.warning("将继续保存账号信息（不含 TOTP secret），可后续手动设置")
-        else:
-            logger.debug("已跳过 2FA 设置 (config.ENABLE_2FA=False)")
 
         # ==================== 阶段 7.5: Codex OAuth（注册成功→拿回调/CPA凭证）====================
         # 用全新干净 session 从头登录该邮箱，走 邮箱OTP→手机短信验证(接码)→选workspace

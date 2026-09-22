@@ -20,7 +20,7 @@ from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
-_VALID_SOURCES = ("outlook", "generic_api", "imap", "cloudflare_domain", "cloudflare", "gptmail", "mailnest", "cloudmail", "remail")
+_VALID_SOURCES = ("outlook", "generic_api", "imap", "cloudflare_domain", "cloudflare", "gptmail", "mailnest", "cloudmail", "remail", "moemail")
 
 
 def parse_email_sources(value=None) -> list[str]:
@@ -49,6 +49,9 @@ def parse_email_sources(value=None) -> list[str]:
 
 
 def _pick_from_source(source: str) -> str:
+    if source == "moemail":
+        from core.moemail_client import pick_account
+        return pick_account().email
     if source == "gptmail":
         from core.gptmail_client import pick_account
         return pick_account().email
@@ -132,6 +135,10 @@ def resolve_email_source(email: str) -> str:
     registered_source = _registered_email_source(email)
     if registered_source:
         return registered_source
+
+    from core.moemail_client import get_account_context as get_moemail_context
+    if get_moemail_context(email):
+        return "moemail"
 
     from core.gptmail_client import get_account_context as get_gptmail_context
     if get_gptmail_context(email):
@@ -246,6 +253,9 @@ def wait_for_otp(
         or _registered_email_source(email)
         or resolve_email_source(email)
     )
+    if source == "moemail":
+        from core.moemail_client import fetch_latest_otp
+        return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
     if source == "gptmail":
         from core.gptmail_client import fetch_latest_otp
         return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
@@ -293,6 +303,10 @@ def email_material_line(email: str, source: str | None = None) -> str:
 def release_email(email: str, status: str = "available", note: str | None = None) -> str:
     """按邮箱实际来源回收状态，返回来源名。"""
     source = resolve_email_source(email)
+    if source == "moemail":
+        from core.moemail_client import release_account
+        release_account(email, status=status, note=note)
+        return source
     if source == "gptmail":
         from core.gptmail_client import release_account
         release_account(email, status=status, note=note)

@@ -131,6 +131,11 @@ def _ensure_sqlite() -> None:
                 payload TEXT NOT NULL,
                 PRIMARY KEY (id)
             );
+            CREATE TABLE IF NOT EXISTS provider_mailboxes (
+                source TEXT NOT NULL, api_base TEXT NOT NULL, email TEXT NOT NULL,
+                updated_at TEXT NOT NULL, payload TEXT NOT NULL,
+                PRIMARY KEY (source, api_base, email)
+            );
             CREATE TABLE IF NOT EXISTS email_pool (
                 id INTEGER PRIMARY KEY,
                 email TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '',
@@ -666,6 +671,25 @@ def _save_imap_emails(rows: list[dict]) -> None:
 
 def _load_accounts() -> list[dict]:
     return _load_collection("accounts")
+
+
+def save_provider_mailbox(metadata: dict) -> None:
+    """Persist generated mailbox IDs before account creation/binding completes."""
+    _ensure_sqlite()
+    with _LOCK, closing(_sqlite_conn()) as conn, conn:
+        conn.execute(
+            "INSERT INTO provider_mailboxes(source,api_base,email,updated_at,payload) VALUES(?,?,?,?,?) "
+            "ON CONFLICT(source,api_base,email) DO UPDATE SET updated_at=excluded.updated_at,payload=excluded.payload",
+            (metadata["source"], metadata["api_base"], metadata["email"].lower(), _now(), json.dumps(metadata, ensure_ascii=False)),
+        )
+
+
+def get_provider_mailbox(source: str, email: str) -> dict | None:
+    _ensure_sqlite()
+    with _LOCK, closing(_sqlite_conn()) as conn:
+        row = conn.execute("SELECT payload FROM provider_mailboxes WHERE source=? AND email=? ORDER BY updated_at DESC LIMIT 1",
+                           (source, email.lower())).fetchone()
+        return json.loads(row[0]) if row else None
 
 
 def _save_accounts(rows: list[dict]) -> None:
@@ -1659,6 +1683,8 @@ def list_account_plan_check_statuses(
         "codex_agent_status", "codex_agent_message",
         "codex_agent_runtime_id", "codex_agent_sub2api_url",
         "codex_agent_sub2api_mode", "codex_agent_sub2api_total",
+        "password_setup_status", "password_setup_error", "password_setup_message",
+        "password_setup_started_at", "password_setup_completed_at",
         "totp_setup_status", "totp_setup_ok", "totp_setup_error",
         "totp_setup_message", "totp_setup_trigger", "totp_setup_queued_at",
         "totp_setup_started_at", "totp_setup_completed_at", "totp_setup_checked_at",
@@ -1700,6 +1726,7 @@ def list_account_plan_check_statuses(
                 for expire_key in ("expires_at", "plan_expires_at", "plan_renews_at", "renews_at"):
                     item.pop(expire_key, None)
             item["codex_agent_has_token"] = bool(str(row.get("codex_agent_token") or "").strip())
+            item["has_password"] = bool(_extract_registration_password(row))
             item["has_access_token"] = bool(str(row.get("access_token") or "").strip())
             items.append(item)
         # updated_at 目前只有秒级精度；一次快速查询可能在同一秒内完成
@@ -1724,6 +1751,10 @@ def list_account_plan_check_statuses(
                     "codex_status": row.get("codex_status"),
                     "codex_phone_verified": row.get("codex_phone_verified"),
                     "codex_agent_status": row.get("codex_agent_status"),
+                    "has_password": bool(_extract_registration_password(row)),
+                    "password_setup_status": row.get("password_setup_status"),
+                    "password_setup_error": row.get("password_setup_error"),
+                    "password_setup_message": row.get("password_setup_message"),
                     "totp_setup_status": row.get("totp_setup_status"),
                     "totp_setup_ok": row.get("totp_setup_ok"),
                     "totp_setup_error": row.get("totp_setup_error"),
@@ -1868,6 +1899,7 @@ def mark_account_email_change_running(acc_id: int, new_email: str) -> bool:
 def finish_account_email_change(
     acc_id: int, *, ok: bool, new_email: str | None = None, source: str | None = None,
     material_line: str | None = None, error: str | None = None,
+    email_service: dict | None = None,
 ) -> bool:
     """写回换绑结果；成功时保留初始邮箱并将账号主邮箱切换为新邮箱。"""
     with _LOCK:
@@ -1886,6 +1918,13 @@ def finish_account_email_change(
             row["email"] = str(new_email).strip()
             row["email_source"] = str(source or row.get("email_source") or "")
             row["original_email_line"] = str(material_line or new_email)
+            raw_extra = row.get("extra_json") or {}
+            extra = json.loads(raw_extra) if isinstance(raw_extra, str) else dict(raw_extra)
+            if email_service is not None:
+                extra["email_service"] = email_service
+            elif source and source != (extra.get("email_service") or {}).get("source"):
+                extra.pop("email_service", None)
+            row["extra_json"] = json.dumps(extra, ensure_ascii=False)
             # 清理旧邮箱来源遗留的 Outlook 凭证；若新来源仍为 Outlook 则写入新素材。
             row["password"] = ""
             row["client_id"] = ""
@@ -1974,12 +2013,80 @@ def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
         return True
 
 
+def claim_account_security_setup(acc_id: int, *, password_enabled: bool, totp_enabled: bool,
+                                 trigger: str = "registration_auto") -> bool:
+    """Reserve both stages atomically; manual TOTP uses the same reservation."""
+    with _LOCK:
+        rows = _load_accounts()
+        row = next((r for r in rows if int(r.get("id") or 0) == int(acc_id)), None)
+        if row is None or any(row.get(key) in {"queued", "running"} for key in
+                              ("security_setup_status", "password_setup_status", "totp_setup_status")):
+            return False
+        now = _now()
+        row["security_setup_status"] = "queued"
+        for prefix, enabled in (("password", password_enabled), ("totp", totp_enabled)):
+            if not enabled:
+                continue
+            row.update({f"{prefix}_setup_status": "queued", f"{prefix}_setup_ok": False,
+                        f"{prefix}_setup_trigger": trigger, f"{prefix}_setup_queued_at": now,
+                        f"{prefix}_setup_started_at": None, f"{prefix}_setup_completed_at": None,
+                        f"{prefix}_setup_error": None, f"{prefix}_setup_message": "等待后台处理"})
+        row["updated_at"] = now
+        _save_accounts(rows)
+        return True
+
+
+def mark_account_security_setup(acc_id: int, status: str) -> bool:
+    with _LOCK:
+        rows = _load_accounts()
+        row = next((r for r in rows if int(r.get("id") or 0) == int(acc_id)), None)
+        if row is None:
+            return False
+        row["security_setup_status"] = status
+        row["updated_at"] = _now()
+        _save_accounts(rows)
+        return True
+
+
+def update_account_password_setup(acc_id: int, result: dict) -> bool:
+    """Merge only password-task fields; never replace other tasks' extra data."""
+    with _LOCK:
+        rows = _load_accounts()
+        row = next((r for r in rows if int(r.get("id") or 0) == int(acc_id)), None)
+        if row is None:
+            return False
+        status = result.get("status", "failed")
+        ok = bool(result.get("ok")) and status in {"success", "skipped"}
+        row.update(password_setup_status=status, password_setup_ok=ok,
+                   password_setup_error=result.get("error"),
+                   password_setup_message=result.get("message", ""), updated_at=_now())
+        if status == "running":
+            row["password_setup_started_at"] = _now()
+        elif status in {"success", "skipped", "failed", "unknown"}:
+            row["password_setup_completed_at"] = _now()
+        if ok and result.get("password"):
+            raw = row.get("extra_json") or {}
+            extra = json.loads(raw) if isinstance(raw, str) else dict(raw)
+            extra["registration_password"] = result["password"]
+            row["extra_json"] = json.dumps(extra, ensure_ascii=False)
+        if ok and result.get("access_token"):
+            row["access_token"] = result["access_token"]
+            session = result.get("session") or {}
+            if session.get("expires"):
+                row["expires_at"] = session["expires"]
+        row["copy_line"] = _account_line(row)
+        _save_accounts(rows)
+        return True
+
+
 def claim_account_totp_setup(acc_id: int, trigger: str = "manual") -> bool:
     """原子占用账号 2FA 设置任务；已有未超时任务时返回 False。"""
     with _LOCK:
         rows = _load_accounts()
         row = next((r for r in rows if int(r.get("id") or 0) == int(acc_id)), None)
         if row is None:
+            return False
+        if row.get("security_setup_status") in {"queued", "running"}:
             return False
         current_status = row.get("totp_setup_status")
         if current_status in {"queued", "running"}:
@@ -2054,6 +2161,17 @@ def recover_interrupted_totp_setups() -> int:
         recovered = 0
         now = _now()
         for row in rows:
+            security_interrupted = row.get("security_setup_status") in {"queued", "running"}
+            if security_interrupted:
+                row["security_setup_status"] = "interrupted"
+            if row.get("password_setup_status") in {"queued", "running"}:
+                row.update(password_setup_status="unknown", password_setup_ok=False,
+                           password_setup_error="服务重启导致密码任务中断，结果未确认；不会自动重放",
+                           password_setup_completed_at=now, updated_at=now)
+                recovered += 1
+            elif security_interrupted:
+                row["updated_at"] = now
+                recovered += 1
             if row.get("totp_setup_status") not in {"queued", "running"}:
                 continue
             row["totp_setup_status"] = "failed"

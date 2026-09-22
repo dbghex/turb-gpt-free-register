@@ -122,6 +122,13 @@ def _public_inbox_latest_code_url(code_url: str) -> str | None:
 
 def _public_inbox_page_api_url(code_url: str) -> str | None:
     """返回公开收件页面实际使用的收件箱列表 API。"""
+    parsed = urlparse(str(code_url or "").strip())
+    match = re.fullmatch(r"/u/([^/?#]+)/?", parsed.path)
+    if match and parsed.scheme in {"http", "https"} and parsed.netloc:
+        token = unquote(match.group(1)).strip()
+        if token and "/" not in token:
+            origin = urlunparse((parsed.scheme, parsed.netloc, "", "", "", ""))
+            return f"{origin}/api/public/inbox/{quote(token, safe='')}?limit=20&days=7"
     latest_url = _public_inbox_latest_code_url(code_url)
     if not latest_url:
         return None
@@ -154,21 +161,25 @@ def _fetch_public_inbox_page_otp(
             return None
     if not isinstance(data, dict):
         return None
-    mailbox = data.get("mailbox") or {}
-    actual_email = str(mailbox.get("address") if isinstance(mailbox, dict) else mailbox or "").strip()
+    is_short_link = "/api/public/inbox/" in urlparse(api_url).path
+    if is_short_link:
+        data = data.get("data")
+        if not isinstance(data, dict):
+            return None
+    mailbox = data.get("mailbox") or data.get("alias") or {}
+    actual_email = str((mailbox.get("address") if isinstance(mailbox, dict) else mailbox) or "").strip()
     if actual_email and actual_email.lower() != email.lower():
         raise GenericApiMailError(
             f"公开收件链接邮箱不匹配: expected={email}, actual={actual_email}"
         )
     items = [x for x in (data.get("messages") or []) if isinstance(x, dict)]
     items.sort(
-        key=lambda x: _parse_generic_api_ts(x.get("receivedAt") or x.get("received_at")) or 0,
+        key=lambda x: _parse_generic_api_ts(x.get("receivedAt") or x.get("received_at") or x.get("date")) or 0,
         reverse=True,
     )
-    origin = api_url.split("/api/public/inboxes/", 1)[0]
-    token_path = api_url.split("/api/public/inboxes/", 1)[1].split("?", 1)[0].strip("/")
+    inbox_url = api_url.split("?", 1)[0].rstrip("/")
     for item in items:
-        received_at = item.get("receivedAt") or item.get("received_at")
+        received_at = item.get("receivedAt") or item.get("received_at") or item.get("date")
         msg_ts = _parse_generic_api_ts(received_at)
         if after_ts and msg_ts and msg_ts + 2 < after_ts:
             continue
@@ -180,12 +191,15 @@ def _fetch_public_inbox_page_otp(
         subject = str(item.get("subject") or "")
         preview = str(item.get("preview") or "")
         if not code:
-            code = _extract_yangyang_openai_code(subject, preview)
+            code = _extract_yangyang_openai_code(subject, "\n".join(
+                str(item.get(field) or "")
+                for field in ("preview", "text", "html", "textBody", "htmlBody")
+            ))
         msg_id = str(item.get("id") or "").strip()
         # 页面列表预览仍未抽到时，读取页面点击邮件时使用的详情 API。
         if not code and msg_id:
             detail_url = (
-                f"{origin}/api/public/inboxes/{quote(unquote(token_path), safe='')}"
+                f"{inbox_url}"
                 f"/messages/{quote(msg_id, safe='')}"
             )
             try:
@@ -197,11 +211,15 @@ def _fetch_public_inbox_page_otp(
                 )
                 if detail_resp.status_code == 200:
                     detail = detail_resp.json()
+                    if is_short_link:
+                        detail = detail.get("data") or {}
                     detail_text = "\n".join([
                         str(detail.get("subject") or subject),
                         str(detail.get("preview") or preview),
                         str(detail.get("textBody") or ""),
                         str(detail.get("htmlBody") or ""),
+                        str(detail.get("text") or ""),
+                        str(detail.get("html") or ""),
                     ])
                     code = _extract_yangyang_openai_code(subject, detail_text)
             except Exception as exc:

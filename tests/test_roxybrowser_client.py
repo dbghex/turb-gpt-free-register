@@ -38,6 +38,22 @@ class RoxyBrowserClientRetryTests(unittest.TestCase):
         client.http = _Http(responses)
         return client
 
+    def test_workspace_connection_failure_stops_endpoint_probing(self):
+        import requests
+        client = self._client([requests.ConnectionError("connection refused")])
+        with self.assertRaisesRegex(RuntimeError, "WebUI 后端所在机器"):
+            client.list_workspaces()
+        self.assertEqual(client.http.calls, 1)
+
+    def test_workspace_official_response(self):
+        client = self._client([_Response({"code": 0, "data": {"rows": [
+            {"id": 90143, "workspaceName": "Test", "project_details": [
+                {"projectId": 97471, "projectName": "Project"}]}]}})])
+        result = client.list_workspaces()
+        self.assertTrue(result["ok"])
+        self.assertEqual(str(result["items"][0]["id"]), "90143")
+        self.assertEqual(str(result["items"][0]["projectId"]), "97471")
+
     def test_create_retries_explicit_pre_tls_failure(self):
         client = self._client([
             _Response({

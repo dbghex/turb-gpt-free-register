@@ -49,6 +49,8 @@ EXPLICIT_EMPTY_LIST_ENV_KEYS = {"PROXY_POOL"}
 
 # 统一管理：env key -> 说明（.env.example 用）
 SECRET_ENV_KEYS: dict[str, str] = {
+    "MOEMAIL_API_KEY": "MoeMail API Key",
+    "REGISTER_PASSWORD": "注册后设置的固定登录密码",
     "WEBUI_AUTH_CODE": "WebUI 登录授权码",
     "WEBUI_SESSION_SECRET": "WebUI Session Cookie 签名密钥",
     "BROWSER_USE_API_KEY": "Browser Use Cloud API Key",

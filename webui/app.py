@@ -274,6 +274,7 @@ def _compact_account_for_list(row: dict) -> dict:
     ).strip()
     if password:
         out["password"] = password
+    out["has_password"] = bool(password)
 
     # 这些是列表固定列直接展示字段。
     for key in (
@@ -282,7 +283,7 @@ def _compact_account_for_list(row: dict) -> dict:
         "plan_check_status", "codex_status", "codex_agent_status",
         "gcash_eligibility_status", "gcash_eligibility_ok", "gcash_eligibility_outcome",
         "gcash_eligibility_reason", "gcash_eligibility_message", "gcash_eligibility_checked_at",
-        "totp_setup_status",
+        "totp_setup_status", "password_setup_status", "password_setup_error", "password_setup_message",
     ):
         if key in row:
             out[key] = row.get(key)
@@ -530,7 +531,7 @@ def create_app(auth_code: str | None = None) -> Flask:
         pool = {"total": 0, "available": 0, "used": 0, "failed": 0}
         for src in parse_email_sources(_email_cfg.EMAIL_SOURCE):
             # GPTMail/MailNest/CloudMail 地址按需生成，不属于本地邮箱池。
-            if src in ("gptmail", "mailnest", "cloudmail", "cloudflare"):
+            if src in ("gptmail", "mailnest", "cloudmail", "cloudflare", "remail", "moemail"):
                 continue
             one = (
                 db.generic_api_email_pool_summary() if src == "generic_api"
@@ -760,6 +761,33 @@ def create_app(auth_code: str | None = None) -> Flask:
             return jsonify({"ok": False, "error": "账号不存在"}), 404
         return jsonify({"ok": True, "updated": True, "id": acc_id, "note": note})
 
+    @app.post("/api/accounts/<int:acc_id>/password-setup")
+    def api_account_password_setup(acc_id: int):
+        from config import email as email_cfg
+        from config import register as register_cfg
+        from core import twofa_service
+        acc = db.get_account(acc_id)
+        if not acc:
+            return jsonify({"ok": False, "error": "账号不存在"}), 404
+        if db._extract_registration_password(acc):
+            return jsonify({"ok": False, "error": "该账号已设置登录密码"}), 400
+        token = str(acc.get("access_token") or "").strip()
+        if not token:
+            return jsonify({"ok": False, "error": "该账号没有 access_token"}), 400
+        if not email_cfg.USE_EMAIL_SERVICE:
+            return jsonify({"ok": False, "error": "设置密码需要开启自动邮箱收码"}), 400
+        configured = str(register_cfg.REGISTER_PASSWORD or "")
+        if configured and len(configured) < 12:
+            return jsonify({"ok": False, "error": "固定登录密码至少需要12个字符"}), 400
+        queued = twofa_service.enqueue_account_security_setup(
+            account_id=acc_id, email=str(acc.get("email") or ""), access_token=token,
+            proxy=acc.get("proxy_used") or None, trigger="manual",
+            password_enabled=True, totp_enabled=False,
+        )
+        payload = {k: v for k, v in queued.items() if k != "future"}
+        status = 409 if queued.get("busy") else (202 if queued.get("accepted") else 503)
+        return jsonify({"ok": bool(queued.get("accepted")), **payload}), status
+
     @app.post("/api/accounts/<int:acc_id>/totp-setup")
     def api_account_totp_setup(acc_id: int):
         """为单个账号开启 2FA/TOTP，成功后自动把 secret 写回账号记录。"""
@@ -796,14 +824,26 @@ def create_app(auth_code: str | None = None) -> Flask:
             **queued_payload,
         }), 202
 
+    def _validate_moemail_source(source):
+        if source == "moemail":
+            from core.moemail_client import validate_config, MoeMailError
+            try:
+                validate_config()
+            except (MoeMailError, ValueError):
+                return jsonify({"ok": False, "error": "请在配置 → 邮箱 / OTP → MoeMail 填写有效 API 地址、API Key 并选择域名"}), 400
+        return None
+
     @app.post("/api/accounts/<int:acc_id>/change-email")
     def api_account_change_email(acc_id: int):
         """给单个账号排队换绑邮箱。Body {source}."""
         data = request.get_json(silent=True) or {}
         source = str(data.get("source") or "").strip().lower()
-        allowed = {"outlook", "generic_api", "imap", "cloudflare_domain", "cloudflare", "gptmail", "mailnest", "cloudmail", "remail"}
+        allowed = {"outlook", "generic_api", "imap", "cloudflare_domain", "cloudflare", "gptmail", "mailnest", "cloudmail", "remail", "moemail"}
         if source not in allowed:
             return jsonify({"ok": False, "error": "请选择有效的邮箱来源"}), 400
+        invalid = _validate_moemail_source(source)
+        if invalid is not None:
+            return invalid
         acc = db.get_account(acc_id)
         if not acc:
             return jsonify({"ok": False, "error": "账号不存在"}), 404
@@ -820,9 +860,12 @@ def create_app(auth_code: str | None = None) -> Flask:
         data = request.get_json(silent=True) or {}
         ids = data.get("account_ids") or data.get("ids") or []
         source = str(data.get("source") or "").strip().lower()
-        allowed = {"outlook", "generic_api", "imap", "cloudflare_domain", "cloudflare", "gptmail", "mailnest", "cloudmail", "remail"}
+        allowed = {"outlook", "generic_api", "imap", "cloudflare_domain", "cloudflare", "gptmail", "mailnest", "cloudmail", "remail", "moemail"}
         if source not in allowed:
             return jsonify({"ok": False, "error": "请选择有效的邮箱来源"}), 400
+        invalid = _validate_moemail_source(source)
+        if invalid is not None:
+            return invalid
         if not isinstance(ids, list) or not ids:
             return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
         if len(ids) > 500:
@@ -2672,6 +2715,21 @@ def create_app(auth_code: str | None = None) -> Flask:
         data = _read_log_tail(p, max_bytes=80_000, running_fn=lambda: live_check_service.is_checking(email))
         return jsonify(data)
 
+    @app.get("/api/accounts/password-setup-log")
+    def api_account_password_setup_log():
+        from core import twofa_service
+        email = (request.args.get("email") or "").strip()
+        if not email:
+            return jsonify({"ok": False, "error": "email 为空"}), 400
+        acc = db.get_account_by_email(email)
+        if not acc:
+            return jsonify({"ok": False, "error": "账号不存在"}), 404
+        data = _read_log_tail(twofa_service.password_log_path(email), max_bytes=80_000, running_fn=lambda: False)
+        data["running"] = (acc.get("password_setup_status") in {"queued", "running"}
+                           or acc.get("security_setup_status") in {"queued", "running"})
+        data["status"] = acc.get("password_setup_status")
+        return jsonify(data)
+
     @app.get("/api/accounts/totp-setup-log")
     def api_account_totp_setup_log():
         """读取某邮箱最近一次 2FA 设置日志。?email=xxx"""
@@ -2836,6 +2894,10 @@ def create_app(auth_code: str | None = None) -> Flask:
                     "ok": False,
                     "error": "已选择 cloudmail 邮箱来源，请填写 CloudMail Token（配置 → 邮箱 / OTP）。",
                 }), 400
+        if "moemail" in sources:
+            invalid = _validate_moemail_source("moemail")
+            if invalid is not None:
+                return invalid
         if "remail" in sources:
             api_base = str(getattr(_email_cfg, "REMAIL_API_BASE", "") or "").strip()
             api_key = str(getattr(_email_cfg, "REMAIL_API_KEY", "") or "").strip()
@@ -2870,7 +2932,7 @@ def create_app(auth_code: str | None = None) -> Flask:
                     "ok": False,
                     "error": "Remail 服务模式只能填写 code 或 purchase（配置 → 邮箱 / OTP）。",
                 }), 400
-        if "gptmail" in sources or "mailnest" in sources or "cloudmail" in sources or "remail" in sources or "cloudflare" in sources:
+        if any(src in sources for src in ("gptmail", "mailnest", "cloudmail", "remail", "cloudflare", "moemail")):
             # 临时邮箱在任务开始时动态生成，不需要本地邮箱池容量提示。
             warning = ""
         elif "cloudflare_domain" in sources:
@@ -3190,6 +3252,26 @@ def create_app(auth_code: str | None = None) -> Flask:
             return jsonify(payload), status
         finally:
             _hero_close_quietly(client)
+
+    @app.post("/api/moemail/domains")
+    def api_moemail_domains():
+        from config import email as email_cfg
+        from core.moemail_client import MoeMailClient, MoeMailError
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({"ok": False, "error": "请求格式无效"}), 400
+        client = None
+        try:
+            client = MoeMailClient(api_base=data.get("api_base") or email_cfg.MOEMAIL_API_BASE,
+                                   api_key=data.get("api_key") or email_cfg.MOEMAIL_API_KEY)
+            return jsonify({"ok": True, "domains": client.domains()})
+        except MoeMailError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        except Exception:
+            return jsonify({"ok": False, "error": "MoeMail 配置查询失败，请检查连接和配置"}), 502
+        finally:
+            if client:
+                client.close()
 
     @app.post("/api/cloudmail/gen-token")
     def api_cloudmail_gen_token():

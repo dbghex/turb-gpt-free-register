@@ -198,8 +198,8 @@
       width: 100%; max-width: 100%; min-width: 0;
       max-height: 320px; overflow: auto; line-height: 1.5;
     }
-    #logPanel, #retryLogPanel, #liveLogPanel, #totpLogPanel, #emailChangeLogPanel, #qrPanel { min-width: 0; max-width: 100%; overflow-x: hidden; }
-    #logPanel:not(.hidden), #retryLogPanel:not(.hidden), #liveLogPanel:not(.hidden), #totpLogPanel:not(.hidden), #emailChangeLogPanel:not(.hidden), #qrPanel:not(.hidden) {
+    #logPanel, #retryLogPanel, #liveLogPanel, #passwordLogPanel, #totpLogPanel, #emailChangeLogPanel, #qrPanel { min-width: 0; max-width: 100%; overflow-x: hidden; }
+    #logPanel:not(.hidden), #retryLogPanel:not(.hidden), #liveLogPanel:not(.hidden), #passwordLogPanel:not(.hidden), #totpLogPanel:not(.hidden), #emailChangeLogPanel:not(.hidden), #qrPanel:not(.hidden) {
       position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
       z-index: 1000; display: block; width: min(1100px, calc(100vw - 48px));
       max-height: min(760px, calc(100vh - 48px)); overflow: hidden;
@@ -207,9 +207,9 @@
       background: var(--surface); box-shadow: 0 0 0 9999px rgba(15,23,42,.45), 0 24px 70px rgba(15,23,42,.34);
     }
     #qrPanel:not(.hidden) { width: min(520px, calc(100vw - 48px)); text-align: center; }
-    #logPanel h3, #retryLogPanel h3, #liveLogPanel h3, #totpLogPanel h3, #emailChangeLogPanel h3, #qrPanel h3 { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
-    #logPanel h3 .btn, #retryLogPanel h3 .btn, #liveLogPanel h3 .btn, #totpLogPanel h3 .btn, #emailChangeLogPanel h3 .btn, #qrPanel h3 .btn { margin-left:auto; float:none !important; }
-    #logPanel .log, #retryLogPanel .log, #liveLogPanel .log, #totpLogPanel .log, #emailChangeLogPanel .log { max-height: calc(min(760px, calc(100vh - 48px)) - 74px); margin-top:0; }
+    #logPanel h3, #retryLogPanel h3, #liveLogPanel h3, #passwordLogPanel h3, #totpLogPanel h3, #emailChangeLogPanel h3, #qrPanel h3 { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+    #logPanel h3 .btn, #retryLogPanel h3 .btn, #liveLogPanel h3 .btn, #passwordLogPanel h3 .btn, #totpLogPanel h3 .btn, #emailChangeLogPanel h3 .btn, #qrPanel h3 .btn { margin-left:auto; float:none !important; }
+    #logPanel .log, #retryLogPanel .log, #liveLogPanel .log, #passwordLogPanel .log, #totpLogPanel .log, #emailChangeLogPanel .log { max-height: calc(min(760px, calc(100vh - 48px)) - 74px); margin-top:0; }
     #qrPanel img { display:block; max-width:min(360px, calc(100vw - 96px)); max-height:420px; margin:12px auto; border:1px solid var(--line); border-radius:10px; background:#fff; }
     #qrPanel .qr-link { display:block; word-break:break-all; white-space:normal; font-size:12px; color:var(--muted); margin-top:8px; }
     .hidden { display: none !important; }
@@ -2530,6 +2530,12 @@
       </h3>
       <div class="log" id="liveLogContent">加载中…</div>
     </div>
+    <div class="body hidden" id="passwordLogPanel">
+      <h3>密码日志：<span id="passwordLogEmail" style="font-size:13px;font-weight:400;color:var(--muted);"></span>
+        <button class="btn" id="btnClosePasswordLog" style="float:right;min-height:28px;">关闭</button>
+      </h3>
+      <div class="log" id="passwordLogContent">加载中…</div>
+    </div>
     <div class="body hidden" id="totpLogPanel">
       <h3>2FA日志：<span id="totpLogEmail" style="font-size:13px;font-weight:400;color:var(--muted);"></span>
         <button class="btn" id="btnCloseTotpLog" style="float:right;min-height:28px;">关闭</button>
@@ -2782,7 +2788,7 @@
       <label class="outlook-import-field"><span>新邮箱来源</span><select id="emailChangeSourceV2">
         <option value="outlook">Outlook 邮箱池</option><option value="generic_api">通用 API</option><option value="imap">通用 IMAP</option>
         <option value="cloudflare_domain">Cloudflare 域名邮箱</option><option value="cloudflare">Cloudflare 临时邮箱</option>
-        <option value="gptmail">GPTMail</option><option value="mailnest">MailNest</option><option value="cloudmail">CloudMail</option><option value="remail">Remail</option>
+        <option value="gptmail">GPTMail</option><option value="mailnest">MailNest</option><option value="cloudmail">CloudMail</option><option value="remail">Remail</option><option value="moemail">MoeMail（永久邮箱）</option>
       </select></label>
       <div class="banner warn">换绑成功后当前 access_token 会失效并被清空，系统会立即使用新邮箱自动查活并刷新 AT。原邮箱会保留在账号记录中。</div>
     </div>
@@ -3270,6 +3276,7 @@ function updateModalScrollLock() {
   const opened = !$('#logPanel').classList.contains('hidden')
     || !$('#retryLogPanel').classList.contains('hidden')
     || !$('#liveLogPanel').classList.contains('hidden')
+    || !$('#passwordLogPanel').classList.contains('hidden')
     || !$('#totpLogPanel').classList.contains('hidden')
     || !$('#emailChangeLogPanel').classList.contains('hidden')
     || !$('#qrPanel').classList.contains('hidden')
@@ -3557,6 +3564,8 @@ async function pollAccountPlanStatuses() {
         if (wasExtracting && !isExtracting) needsFullReload = true;
         if (wasAgenting && !isAgenting) needsFullReload = true;
         if (wasCodexRetrying && !isCodexRetrying) needsFullReload = true;
+        if (item.has_password && !account?.password) needsFullReload = true;
+        if (['queued','running'].includes(account?.password_setup_status) && !['queued','running'].includes(item.password_setup_status)) needsFullReload = true;
         Object.assign(account, item);
       });
       planStatusRevision = snapshot.revision || '';
@@ -3590,6 +3599,30 @@ function _codexCellV2(r) {
   if (s === 'deactivated') return `<span class="acc-v2-codex is-fail" title="授权记录显示账号异常，建议通过查活确认账号状态">失败</span>`;
   return `<span class="acc-v2-muted">-</span>`;
 }
+function _passwordCellV2(r) {
+  if (r.password) return `<div class="acc-v2-twofa-actions"><span class="acc-v2-twofa-badge">已设置</span><span class="mono" style="overflow-wrap:anywhere;white-space:normal;max-width:100%;">${esc(r.password)}</span><button type="button" class="acc-v2-twofa-btn" data-account-copy-secret="password" data-account-id="${esc(r.id)}">复制密码</button></div>`;
+  const status = r.password_setup_status || '';
+  const detail = r.password_setup_error || r.password_setup_message || '';
+  if (['queued','running'].includes(status)) return `<span class="pill status-running" title="${esc(detail)}">${status === 'queued' ? '排队中' : '设置中'}</span>`;
+  if (r.has_password) return '<span class="acc-v2-muted">已设置，正在加载密码</span>';
+  const note = status === 'unknown' ? '结果未确认' : status === 'failed' ? '设置失败' : '';
+  return `<div class="acc-v2-twofa-actions">${note ? `<span class="hint" title="${esc(detail)}">${note}</span>` : ''}${r.has_access_token ? `<button type="button" class="acc-v2-twofa-btn" data-account-password-setup="${esc(r.id)}" title="${esc(detail || '通过协议设置登录密码')}">设置登录密码</button>` : '<span class="acc-v2-muted">无Token</span>'}${note ? `<button type="button" class="acc-v2-twofa-btn" data-account-password-log="${esc(r.email)}">密码日志</button>` : ''}</div>`;
+}
+
+async function setupAccountPassword(id, btn) {
+  const account = ACCOUNTS.find(a => Number(a.id) === Number(id));
+  if (account?.password_setup_status === 'unknown' && !confirm('上次提交结果未确认，可能已经设置成功。本操作只尝试添加密码，不覆盖已有密码。是否重新尝试？')) return;
+  if (btn) btn.disabled = true;
+  try {
+    await api(`/api/accounts/${encodeURIComponent(id)}/password-setup`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    showToast('设置登录密码已入队');
+    if (account) { account.password_setup_status = 'queued'; renderAccounts(); openPasswordLog(account.email); }
+    planStatusRevision = '';
+    await loadAccounts();
+  } catch (err) { showToast('设置密码失败: ' + err.message); }
+  finally { if (btn) btn.disabled = false; }
+}
+
 function _totpCellV2(r) {
   const enabled = !!r.totp_enabled;
   const status = r.totp_setup_status || '';
@@ -3843,6 +3876,7 @@ function _accountsV2MoreMenu(r) {
     `<button type="button" data-account-change-email-log="${esc(r.id)}" title="查看最近一次邮箱换绑日志">换绑日志</button>`,
     `<button type="button" onclick="checkSelectedLive([Number('${esc(r.id)}')], this); return false;" title="重新登录该账号，成功则刷新最新 AT/accessToken">查活刷新AT</button>`,
     `<button type="button" data-account-live-log="${esc(r.email)}" title="查看该账号最近一次查活日志">查活日志</button>`,
+    `<button type="button" data-account-password-log="${esc(r.email)}" title="查看添加密码的实时日志">密码日志</button>`,
     `<button type="button" data-account-totp-log="${esc(r.email)}" title="查看该账号最近一次 2FA 设置日志">2FA日志</button>`,
     _planAction(r),
     _gcashEligibilityAction(r),
@@ -3891,7 +3925,7 @@ function renderAccounts() {
       </td>
       <td class="col-source">${esc(r.email_source || '-')}</td>
       <td class="col-token">${_tokenCellV2(r)}</td>
-      <td class="col-password">${r.password ? `<span class="mono" title="${esc(r.password)}">${esc(short(r.password, 18))}</span>` : '<span class="acc-v2-muted">-</span>'}</td>
+      <td class="col-password">${_passwordCellV2(r)}</td>
       <td class="col-plan">${_planCell(r)}<div class="gcash-eligibility-slot">${_gcashEligibilityCell(r)}</div><div class="acc-v2-sub">${_extractLinkCell(r)}</div></td>
       <td class="col-note" title="${esc(r.note || '')}">${r.note ? esc(short(r.note, 80)) : '<span class="acc-v2-muted">-</span>'}</td>
       <td class="col-small">${_totpCellV2(r)}</td>
@@ -4009,6 +4043,41 @@ async function pollLiveLog() {
 $('#btnCloseLiveLog').addEventListener('click', closeLiveLogModal);
 
 // ---------- 2FA日志面板 ----------
+let passwordLogEmail = null, passwordLogTimer = null;
+
+function openPasswordLog(email) {
+  passwordLogEmail = email;
+  $('#passwordLogEmail').textContent = email;
+  $('#passwordLogPanel').classList.remove('hidden');
+  updateModalScrollLock();
+  $('#passwordLogContent').textContent = '加载中…';
+  pollPasswordLog();
+  clearInterval(passwordLogTimer);
+  passwordLogTimer = setInterval(pollPasswordLog, 5000);
+}
+async function pollPasswordLog() {
+  if (!passwordLogEmail) return;
+  try {
+    const r = await api(`/api/accounts/password-setup-log?email=${encodeURIComponent(passwordLogEmail)}`);
+    const c = $('#passwordLogContent');
+    const atBottom = c.scrollTop + c.clientHeight >= c.scrollHeight - 30;
+    c.textContent = r.log || '(暂无日志，等待任务写入…)';
+    if (atBottom) c.scrollTop = c.scrollHeight;
+    if (!r.running) {
+      clearInterval(passwordLogTimer);
+      loadAccounts();
+    }
+  } catch(e) {}
+}
+function closePasswordLogModal() {
+  $('#passwordLogPanel').classList.add('hidden');
+  updateModalScrollLock();
+  clearInterval(passwordLogTimer);
+  passwordLogTimer = null;
+  passwordLogEmail = null;
+}
+$('#btnClosePasswordLog').addEventListener('click', closePasswordLogModal);
+
 let totpLogEmail = null, totpLogTimer = null;
 
 function openTotpLog(email) {
@@ -4108,6 +4177,7 @@ async function onAccountsBodyClick(e) {
       if (!value) { showToast('可复制内容为空'); return; }
       copyText(value);
       showToast(
+        field === 'password' ? '密码已复制' :
         field === 'access_token' ? 'Token 已复制' :
         field === 'codex_agent_token' ? 'Agent Token 已复制' :
         field === 'totp_secret' ? '2FA 密钥已复制' :
@@ -4162,6 +4232,8 @@ async function onAccountsBodyClick(e) {
     return;
   }
 
+  const passwordLogBtn = e.target.closest('[data-account-password-log]');
+  if (passwordLogBtn) { openPasswordLog(passwordLogBtn.dataset.accountPasswordLog); return; }
   const totpLogBtn = e.target.closest('[data-account-totp-log]');
   if (totpLogBtn) {
     openTotpLog(totpLogBtn.dataset.accountTotpLog);
@@ -4204,6 +4276,8 @@ async function onAccountsBodyClick(e) {
     return;
   }
 
+  const passwordBtn = e.target.closest('[data-account-password-setup]');
+  if (passwordBtn) { await setupAccountPassword(Number(passwordBtn.dataset.accountPasswordSetup), passwordBtn); return; }
   const totpBtn = e.target.closest('[data-account-totp-setup]');
   if (totpBtn) {
     await setupAccountTotp(Number(totpBtn.dataset.accountTotpSetup), totpBtn);
@@ -6227,6 +6301,7 @@ function emailConfigSectionForKey(key) {
   }
   if (key.startsWith('GPTMAIL_')) return ['GPTMail', 'GPTMail 临时邮箱 API 配置'];
   if (key.startsWith('MAIL_NEST_')) return ['MailNest', 'MailNest / 迈巢临时邮箱 API 配置'];
+  if (key.startsWith('MOEMAIL_')) return ['MoeMail', 'MoeMail API 永久邮箱，支持注册和换绑；有效期固定为永久'];
   if (key.startsWith('CLOUDMAIL_')) return ['CloudMail', 'CloudMail 域名随机邮箱、Token 和收信 API 配置'];
   if (key.startsWith('REMAIL_')) return ['Remail', 'Remail 开放 API、项目下单和取件配置'];
   if (key.startsWith('OUTLOOK_')) return ['Outlook 邮箱池', 'Outlook 邮箱池和取件模式配置'];
@@ -6440,6 +6515,7 @@ function setRegistrationDriverValue(value) {
   if (sectionMount) renderRegistrationEpSelect(sectionMount, 'configRegistrationSelectV2');
   bindRoxyWorkspaceToolsV2();
   bindCloudMailToolsV2();
+  bindMoeMailToolsV2();
 }
 function renderRegistrationEpSelect(mount, wrapId) {
   if (!mount) return;
@@ -6549,7 +6625,43 @@ function renderConfigRecommendedLinks(f) {
   if (!items) return '';
   return `<div class="config-recommendations" role="note"><span class="config-recommendations-title">推荐家宽</span>${items}</div>`;
 }
+let MOEMAIL_DOMAIN_OPTIONS = [];
+let MOEMAIL_DOMAIN_OPTIONS_BASE = '';
+function moemailConfigValue(key) {
+  if (Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, key)) return CONFIG_PENDING_UPDATES[key];
+  return (CONFIG.find(f => f.key === key) || {}).value || '';
+}
+async function loadMoeMailDomains() {
+  const btn = document.getElementById('btnLoadMoeMailDomains');
+  const status = document.getElementById('moemailDomainStatus');
+  if (btn) btn.disabled = true;
+  if (status) status.textContent = '正在读取 MoeMail 可用域名…';
+  try {
+    const base = String(moemailConfigValue('MOEMAIL_API_BASE')).replace(/\/+$/, '');
+    const result = await api('/api/moemail/domains', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({api_base:base, api_key:moemailConfigValue('MOEMAIL_API_KEY')})});
+    MOEMAIL_DOMAIN_OPTIONS = result.domains || [];
+    MOEMAIL_DOMAIN_OPTIONS_BASE = base;
+    const current = moemailConfigValue('MOEMAIL_DOMAIN');
+    if (!MOEMAIL_DOMAIN_OPTIONS.includes(current)) CONFIG_PENDING_UPDATES.MOEMAIL_DOMAIN = MOEMAIL_DOMAIN_OPTIONS[0] || '';
+    renderConfigLayoutV2();
+    showToast('MoeMail 域名已获取，请选择并保存配置');
+  } catch (err) {
+    if (status) status.textContent = '获取失败：' + err.message;
+  } finally { if (btn) btn.disabled = false; }
+}
+function bindMoeMailToolsV2() {
+  const btn = document.getElementById('btnLoadMoeMailDomains');
+  if (btn && !btn.dataset.bound) { btn.dataset.bound = '1'; btn.addEventListener('click', loadMoeMailDomains); }
+}
+
 function renderConfigPlainFieldV2(f) {
+  if (f.key === 'MOEMAIL_DOMAIN') {
+    const current = String(moemailConfigValue(f.key));
+    const base = String(moemailConfigValue('MOEMAIL_API_BASE')).replace(/\/+$/, '');
+    const options = base === MOEMAIL_DOMAIN_OPTIONS_BASE ? MOEMAIL_DOMAIN_OPTIONS : [];
+    const all = [...new Set([current, ...options].filter(Boolean))];
+    return `<label class="fld">${esc(f.label)}<span class="hint">${esc(f.help)}</span><select data-key="MOEMAIL_DOMAIN"><option value="">请先获取域名</option>${all.map(d => `<option value="${attrEsc(d)}"${d === current ? ' selected' : ''}>${esc(d)}</option>`).join('')}</select></label>`;
+  }
   if (f.key === 'SMS_PROVIDER') return renderSmsProviderFieldV2(f);
   const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
   let control = '';
@@ -6565,6 +6677,7 @@ function renderConfigPlainFieldV2(f) {
     const ph = f.secret ? '保存在 .env，可留空' : '可留空';
     control = `<input type="${inputType}" data-key="${attrEsc(f.key)}" value="${attrEsc(shown)}" placeholder="${ph}" autocomplete="off" spellcheck="false">`;
   }
+  if (f.key === 'REGISTER_PASSWORD') control += `<button type="button" class="btn" data-clear-register-password>清空固定密码，改用随机密码</button>`;
   const field = `
     <label class="fld">
       ${esc(f.label)}
@@ -6890,6 +7003,9 @@ function renderSectionedConfigSectionV2(name, fields, sectionForKey, preferred, 
     ? `<p class="config-section-v2-subhelp">${esc(current.help)}${promo}</p>`
     : promo;
   let extra = '';
+  if (name === '邮箱 / OTP' && active === 'MoeMail') {
+    extra = `<div class="action-cell"><button class="btn" type="button" id="btnLoadMoeMailDomains">获取域名</button><span id="moemailDomainStatus" class="hint">有效期：永久；获取域名后选择并保存配置</span></div>`;
+  }
   if (name === '邮箱 / OTP' && active === 'CloudMail') {
     extra = renderCloudMailTokenToolsV2();
   }
@@ -7275,7 +7391,7 @@ function renderConfigSectionV2(name, fields) {
     `;
   }
   if (name === '功能开关') {
-    const preferred = ['ENABLE_CODEX_AUTO', 'ENABLE_2FA', 'ENABLE_FLOW_TRIGGER'];
+    const preferred = ['ENABLE_CODEX_AUTO', 'ENABLE_PASSWORD_SETUP', 'ENABLE_2FA', 'ENABLE_FLOW_TRIGGER'];
     const ordered = preferred
       .map(k => fields.find(f => f.key === k))
       .filter(Boolean)
@@ -7314,7 +7430,7 @@ function renderConfigSectionV2(name, fields) {
       name,
       fields,
       emailConfigSectionForKey,
-      ['通用邮箱 / OTP', 'GPTMail', 'MailNest', 'CloudMail', 'Remail', 'Outlook 邮箱池', 'Cloudflare 临时邮箱', 'Cloudflare 域名邮箱', '其他邮箱配置'],
+      ['通用邮箱 / OTP', 'GPTMail', 'MailNest', 'CloudMail', 'MoeMail', 'Remail', 'Outlook 邮箱池', 'Cloudflare 临时邮箱', 'Cloudflare 域名邮箱', '其他邮箱配置'],
       { get: () => CONFIG_EMAIL_ACTIVE_SECTION_V2, set: v => { CONFIG_EMAIL_ACTIVE_SECTION_V2 = v; } },
       'email-section-v2'
     );
@@ -7354,6 +7470,7 @@ function renderConfigLayoutV2() {
   if (sectionMount) renderRegistrationEpSelect(sectionMount, 'configRegistrationSelectV2');
   bindRoxyWorkspaceToolsV2();
   bindCloudMailToolsV2();
+  bindMoeMailToolsV2();
   bindHeroSmsToolsV2();
 }
 function scrollToConfigSection(slug) {
@@ -7532,6 +7649,7 @@ function trackConfigFieldChange(e) {
   const f = CONFIG.find(x => x.key === el.dataset.key);
   if (!f) return;
   CONFIG_PENDING_UPDATES[f.key] = readConfigElementValue(el, f);
+  if (f.key === 'REGISTER_PASSWORD' && CONFIG_PENDING_UPDATES[f.key]) delete CONFIG_PENDING_UPDATES.__clear_secrets__;
   if (f.key === 'AUTO_PLAN_CHECK_AFTER_REGISTER') renderRegistrationDriverCard();
 }
 $('#tab-config').addEventListener('input', trackConfigFieldChange);
@@ -7564,6 +7682,12 @@ async function saveConfigUpdates(triggerBtn) {
   finally { buttons.forEach(btn => { btn.disabled = false; }); }
 }
 $('#tab-config').addEventListener('click', (e) => {
+  if (e.target.closest('[data-clear-register-password]')) {
+    CONFIG_PENDING_UPDATES.__clear_secrets__ = ['REGISTER_PASSWORD'];
+    CONFIG_PENDING_UPDATES.REGISTER_PASSWORD = '';
+    showToast('已选择随机密码，请保存配置');
+    return;
+  }
   const btn = e.target.closest('[data-save-config-v2]');
   if (!btn) return;
   saveConfigUpdates(btn);

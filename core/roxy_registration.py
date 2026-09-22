@@ -558,10 +558,26 @@ def _wait_for_email_input(driver, timeout: int | None = None):
     raise RuntimeError(f"找不到邮箱输入框/邮箱入口（未使用文字识别），state={last_state}")
 
 
+def _is_mobile_input_environment(driver) -> bool:
+    return driver.execute_script(r"""
+    return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '') ||
+      (/Mac/i.test(navigator.platform || '') && navigator.maxTouchPoints > 1);
+    """) is True
+
+
+def _fill_email_input(driver, el, email: str) -> None:
+    """移动端使用原生表单 setter，避免桌面鼠标/快捷键输入链路。"""
+    if _is_mobile_input_environment(driver):
+        logger.info("%s 移动端邮箱输入：使用原生表单赋值", _log_prefix(driver))
+        _set_element_value(driver, el, email)
+    else:
+        _human_type_text(driver, el, email, clear=True)
+
+
 def _type_email_address(driver, email: str, timeout: int | None = None) -> None:
     """进入邮箱登录/注册方式并填写邮箱。全程不依赖页面可见文字。"""
     el = _wait_for_email_input(driver, timeout=timeout)
-    _human_type_text(driver, el, email, clear=True)
+    _fill_email_input(driver, el, email)
 
 
 def _submit_nearest_form_for_active_input(driver) -> bool:
@@ -1053,7 +1069,7 @@ def _submit_email_and_wait_next(
             current_email = str(email_supplier() or "").strip()
             if not current_email:
                 raise RuntimeError("邮箱分配器返回了空邮箱地址")
-            _human_type_text(driver, email_input, current_email, clear=True)
+            _fill_email_input(driver, email_input, current_email)
         state = _email_input_value_state(driver)
         last_state = state
         values = [str(i.get("value") or "") for i in (state.get("inputs") or [])]
@@ -1077,6 +1093,22 @@ def _submit_email_and_wait_next(
 
 
 def _type_otp(driver, code: str) -> None:
+    from selenium.common.exceptions import StaleElementReferenceException
+
+    mobile = _is_mobile_input_environment(driver)
+    if mobile:
+        logger.info("%s[OTP] 移动端验证码输入：使用原生表单赋值", _log_prefix(driver))
+    for attempt in range(3):
+        try:
+            _type_otp_once(driver, code, mobile=mobile)
+            return
+        except StaleElementReferenceException:
+            if attempt == 2:
+                raise
+            logger.info("%s[OTP] 输入框已重建，重新定位后填写（%s/3）", _log_prefix(driver), attempt + 2)
+
+
+def _type_otp_once(driver, code: str, *, mobile: bool) -> None:
     from selenium.webdriver.common.by import By
 
     # 单输入框
@@ -1088,24 +1120,30 @@ def _type_otp(driver, code: str) -> None:
     ]:
         els = [e for e in driver.find_elements(By.CSS_SELECTOR, selector) if _visible(e)]
         if len(els) == 1:
-            _human_type_text(driver, els[0], code, clear=True)
+            if mobile:
+                _set_element_value(driver, els[0], code)
+            else:
+                _human_type_text(driver, els[0], code, clear=True)
             return
 
-    # 6 个分格输入框
-    boxes = [e for e in driver.find_elements(By.CSS_SELECTOR, "input") if _visible(e)]
-    numeric_boxes = []
-    for e in boxes:
-        attrs = " ".join(str(e.get_attribute(k) or "") for k in ("inputmode", "autocomplete", "aria-label", "name", "id", "type"))
-        if any(x in attrs.lower() for x in ("numeric", "one-time", "code", "otp", "tel")):
-            numeric_boxes.append(e)
-    if len(numeric_boxes) >= len(code):
-        for e, ch in zip(numeric_boxes, code):
-            if _browser_actions_enabled():
-                _human_scroll_to(driver, e)
-                time.sleep(random.uniform(0.04, 0.18))
-            e.send_keys(ch)
-            if _browser_actions_enabled():
-                human_delay("keystroke")
+    # 每填一格都重新定位，避免 React 重渲染后继续使用旧 WebElement。
+    def find_boxes():
+        boxes = [e for e in driver.find_elements(By.CSS_SELECTOR, "input") if _visible(e)]
+        return [e for e in boxes if any(
+            marker in " ".join(str(e.get_attribute(k) or "") for k in
+                ("inputmode", "autocomplete", "aria-label", "name", "id", "type")).lower()
+            for marker in ("numeric", "one-time", "code", "otp", "tel")
+        )]
+
+    if len(find_boxes()) == len(code):
+        for index, ch in enumerate(code):
+            boxes = find_boxes()
+            if len(boxes) != len(code):
+                raise RuntimeError("OTP 分格输入框数量在填写期间发生变化")
+            if mobile:
+                _set_element_value(driver, boxes[index], ch)
+            else:
+                _human_type_text(driver, boxes[index], ch, clear=True)
         return
 
     raise RuntimeError("找不到 OTP 输入框")

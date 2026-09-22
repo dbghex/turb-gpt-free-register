@@ -2211,7 +2211,7 @@ async function setupAccountTotp(id, btn) {
 async function changeAccountEmails(ids) {
   ids = (ids || []).map(Number).filter(Boolean);
   if (!ids.length) { showToast('请先选择账号'); return; }
-  const source = prompt('请输入新邮箱来源：\noutlook / generic_api / imap / cloudflare_domain / cloudflare / gptmail / mailnest / cloudmail / remail', 'outlook');
+  const source = prompt('请输入新邮箱来源：\noutlook / generic_api / imap / cloudflare_domain / cloudflare / gptmail / mailnest / cloudmail / remail / moemail', 'outlook');
   if (!source) return;
   try {
     const url = ids.length === 1 ? `/api/accounts/${ids[0]}/change-email` : '/api/accounts/change-email-bulk';
@@ -3417,6 +3417,7 @@ function emailConfigSectionForKey(key) {
   }
   if (key.startsWith('GPTMAIL_')) return ['GPTMail', 'GPTMail 临时邮箱 API 配置'];
   if (key.startsWith('MAIL_NEST_')) return ['MailNest', 'MailNest / 迈巢临时邮箱 API 配置'];
+  if (key.startsWith('MOEMAIL_')) return ['MoeMail', 'MoeMail API 永久邮箱（expiryTime=0），域名可在新版配置中获取'];
   if (key.startsWith('CLOUDMAIL_')) return ['CloudMail', 'CloudMail 域名随机邮箱、Token 和收信 API 配置'];
   if (key.startsWith('REMAIL_')) return ['Remail', 'Remail 开放 API、项目下单和取件配置'];
   if (key.startsWith('OUTLOOK_')) return ['Outlook 邮箱池', 'Outlook 邮箱池和取件模式配置'];
@@ -3491,7 +3492,7 @@ function renderConfigFields(fields) {
       CONFIG_EMAIL_ACTIVE_SECTION,
       v => { CONFIG_EMAIL_ACTIVE_SECTION = v; },
       emailConfigSectionForKey,
-      ['通用邮箱 / OTP', 'GPTMail', 'MailNest', 'CloudMail', 'Remail', 'Outlook 邮箱池', 'Cloudflare 域名邮箱', '其他邮箱配置'],
+      ['通用邮箱 / OTP', 'GPTMail', 'MailNest', 'CloudMail', 'MoeMail', 'Remail', 'Outlook 邮箱池', 'Cloudflare 域名邮箱', '其他邮箱配置'],
       'email-config-section'
     );
   }

@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from core.generic_api_mail_client import (
     GenericApiEmailAccount,
     _public_inbox_latest_code_url,
+    _public_inbox_page_api_url,
+    _fetch_public_inbox_page_otp,
+    GenericApiMailError,
     fetch_latest_otp,
 )
 
@@ -44,6 +47,44 @@ class _Session:
 
 
 class GenericApiPublicInboxTests(unittest.TestCase):
+    def test_short_link_polling_reads_nested_korean_preview(self):
+        email = "test@icloud.com"
+        account = GenericApiEmailAccount(email, "https://mail.example/u/token")
+        session = Mock()
+        session.get.return_value = _Response({"success": True, "data": {
+            "alias": email, "messages": [{"id": "1", "date": "2026-09-20T07:30:00Z",
+            "subject": "ChatGPT 임시 인증 코드", "preview": "인증 코드: 037463 ChatGPT"}]}})
+        with patch("core.generic_api_mail_client.get_account_context", return_value=account), \
+             patch("core.generic_api_mail_client._new_http_session", return_value=session), \
+             patch("core.generic_api_mail_client._proxy_cfg.pick_proxy", return_value=""):
+            self.assertEqual(fetch_latest_otp(email, settle_seconds=0), "037463")
+        self.assertTrue(session.get.call_args.args[0].startswith(
+            "https://mail.example/api/public/inbox/token?limit=20&days=7&"))
+
+    def test_short_link_filters_old_mail_and_reads_detail(self):
+        url = _public_inbox_page_api_url("https://mail.example/u/token")
+        session = Mock()
+        session.get.side_effect = [
+            _Response({"data": {"alias": "test@icloud.com", "messages": [
+                {"id": "old", "date": "2026-09-20T07:27:25Z", "preview": "ChatGPT 111111"},
+                {"id": "new", "date": "2026-09-20T07:30:00Z", "preview": ""}]}}),
+            _Response({"data": {"text": "ChatGPT 인증 코드: 037463"}}),
+        ]
+        from datetime import datetime
+        after = datetime.fromisoformat("2026-09-20T07:29:55+00:00").timestamp()
+        result = _fetch_public_inbox_page_otp(session, url, "test@icloud.com", {}, after)
+        self.assertEqual(result[0], "037463")
+        self.assertEqual(result[1]["received_at"], "2026-09-20T07:30:00Z")
+        self.assertEqual(session.get.call_args.args[0],
+                         "https://mail.example/api/public/inbox/token/messages/new")
+        session.get.side_effect = None
+        session.get.return_value = _Response({"data": {"messages": [
+            {"date": "2026-09-20T07:27:25Z", "preview": "ChatGPT 111111"}]}})
+        self.assertIsNone(_fetch_public_inbox_page_otp(session, url, "test@icloud.com", {}, after))
+        session.get.return_value = _Response({"data": {"alias": "other@icloud.com"}})
+        with self.assertRaises(GenericApiMailError):
+            _fetch_public_inbox_page_otp(session, url, "test@icloud.com", {})
+
     def test_public_link_is_converted_to_latest_code_api(self):
         self.assertEqual(
             _public_inbox_latest_code_url("https://mail.knm03.com/i/HTOJyWzFuVXC"),

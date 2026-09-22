@@ -447,9 +447,13 @@ def _run(account_id: int, source: str) -> dict:
 
         stage = "更新本地账号"
         db_started = time.monotonic()
+        provider_options = {}
+        if source == "moemail":
+            from core.moemail_client import get_account_context_metadata
+            provider_options["email_service"] = get_account_context_metadata(new_email)
         db.finish_account_email_change(
             account_id, ok=True, new_email=new_email, source=source,
-            material_line=email_material_line(new_email, source),
+            material_line=email_material_line(new_email, source), **provider_options,
         )
         _append_log(account_id, f"本地账号更新成功：current_email={new_email}，旧 AT 已清空，cost={_cost(db_started)}")
         # 抓包显示 verify 后旧 AT 会立刻 401，但当前会话中的 __cf_bm、OAuth

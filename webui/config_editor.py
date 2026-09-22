@@ -277,16 +277,25 @@ EDITABLE_FIELDS = [
         "label": "Codex回调超时", "help": "Roxy Codex OAuth 等待 localhost:1455 callback 的最长秒数",
     },
     {
+        "key": "ENABLE_PASSWORD_SETUP", "file": "register.py", "type": "bool", "group": "功能开关",
+        "label": "注册后设置登录密码", "help": "注册成功后通过协议设置密码，再按开关执行 2FA；密码失败也继续尝试 2FA",
+    },
+    {
+        "key": "REGISTER_PASSWORD", "file": "register.py", "type": "str", "group": "功能开关",
+        "label": "固定登录密码", "help": "可选，至少12字符；未配置时每个账号随机生成。清空已保存值后恢复随机密码",
+        "storage": "env", "secret": True, "write_only": True,
+    },
+    {
         "key": "ENABLE_2FA", "file": "twofa.py", "type": "bool", "group": "功能开关",
         "label": "启用 2FA(TOTP)", "help": "注册完成后自动设置动态口令（会多收一封 OTP 邮件）",
     },
     {
         "key": "TWOFA_WORKERS", "file": "twofa.py", "type": "int", "group": "功能开关",
-        "label": "2FA并发数", "help": "同时执行的2FA设置任务数，默认4，范围1-16；修改后需重启服务",
+        "label": "账号安全并发数", "help": "同时执行的密码/2FA任务数，默认4，范围1-16；修改后需重启服务",
     },
     {
         "key": "TWOFA_QUEUE_LIMIT", "file": "twofa.py", "type": "int", "group": "功能开关",
-        "label": "2FA队列容量", "help": "允许排队等待的2FA任务总数，默认200",
+        "label": "账号安全队列容量", "help": "允许排队等待的密码/2FA任务总数，默认200",
     },
     {
         "key": "ENABLE_FLOW_TRIGGER", "file": "flow_trigger.py", "type": "bool", "group": "功能开关",
@@ -327,7 +336,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "EMAIL_SOURCE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
-        "label": "邮箱来源", "help": "可填单个或多个，逗号分隔并按顺序兜底：outlook,generic_api,imap,cloudflare_domain,cloudflare,gptmail,mailnest,cloudmail,remail",
+        "label": "邮箱来源", "help": "可填单个或多个，逗号分隔并按顺序兜底：outlook,generic_api,imap,cloudflare_domain,cloudflare,gptmail,mailnest,cloudmail,remail,moemail",
     },
     {
         "key": "IMAP_MAILBOX", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
@@ -410,6 +419,23 @@ EDITABLE_FIELDS = [
     {
         "key": "MAIL_NEST_PROJECT_CODE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
         "label": "MailNest 项目代码", "help": "项目代码 默认 chatgpt001 获取页面 mailnest.top/buy-email",
+    },
+    {
+        "key": "MOEMAIL_API_BASE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "MoeMail API 地址", "help": "服务根地址，默认 https://edu.email.598888888.xyz",
+    },
+    {
+        "key": "MOEMAIL_API_KEY", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "MoeMail API Key", "help": "通过 X-API-Key 认证；保存在 .env，不回显已保存值",
+        "storage": "env", "secret": True, "write_only": True,
+    },
+    {
+        "key": "MOEMAIL_DOMAIN", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "MoeMail 邮箱域名", "help": "获取域名后选择固定域名；注册和换绑均生成永久邮箱",
+    },
+    {
+        "key": "MOEMAIL_REQUEST_TIMEOUT", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "MoeMail 请求超时（秒）", "help": "默认20秒，生成超时只查询结果，不重复创建",
     },
     {
         "key": "CLOUDMAIL_API_BASE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
@@ -1120,6 +1146,8 @@ def update_config(updates: dict) -> dict:
             if not _normalize_config_value(value, field["type"]):
                 preserved.append(key)
                 continue
+        if key == "REGISTER_PASSWORD" and value and len(str(value).strip()) < 12:
+            raise ValueError("固定登录密码至少需要 12 个字符")
         env_updates[key] = _format_env_value(value, field["type"])
         updated.append(key)
 

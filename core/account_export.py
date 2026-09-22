@@ -509,6 +509,7 @@ def setup_2fa(
     email: str,
     otp_code: str | None = None,
     access_token: str | None = None,
+    login_password: str = "",
 ) -> str:
     """
     完整的 2FA 设置流程。
@@ -551,52 +552,59 @@ def setup_2fa(
     auth_url = _trigger_reauth_with_retry(session, email)
     logger.info("[2FA] 重认证 authorize URL 已获取")
     human_delay("api")
-    _follow_reauth_with_retry(session, auth_url)
-    logger.info("[2FA] 已跟随重认证 authorize URL")
-    human_delay("navigate")
+    if login_password:
+        # Adding a password changes the subsequent reauthentication landing page.
+        from core.password_setup import complete_reauthentication
+        complete_reauthentication(session, email, auth_url, after_ts=reauth_otp_after_ts,
+                                  password=login_password, target="callback")
+        new_token = fetch_session(session)["accessToken"]
+    else:
+        _follow_reauth_with_retry(session, auth_url)
+        logger.info("[2FA] 已跟随重认证 authorize URL")
+        human_delay("navigate")
 
-    if otp_code is None:
-        if _email_cfg.USE_EMAIL_SERVICE:
+        if otp_code is None:
+            if _email_cfg.USE_EMAIL_SERVICE:
+                from core.email_provider import wait_for_otp
+                logger.info("[2FA] 自动等待邮箱重认证 OTP...")
+                otp_code = wait_for_otp(email, after_ts=reauth_otp_after_ts)
+                logger.info("[2FA] 已收到邮箱重认证 OTP")
+            else:
+                logger.info("")
+                logger.info("[2FA] 请检查邮箱，输入新收到的 6 位验证码")
+                otp_code = input(">>> 2FA 验证码: ").strip()
+                logger.info("[2FA] 已手动输入邮箱重认证 OTP")
+
+        human_delay("otp_input")
+        logger.info("[2FA] 正在提交邮箱重认证 OTP...")
+        try:
+            continue_url = _validate_reauth_otp(session, otp_code)
+        except Exception as first_exc:
+            # 部分取码接口会短暂返回缓存中的上一封邮件。若服务端拒绝验证码，
+            # 重新轮询一次并提交最新候选，避免第一次旧码直接终止整个 2FA 流程。
+            status_code = getattr(getattr(first_exc, "response", None), "status_code", None)
+            if status_code != 401 or not bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", False)):
+                raise
+            logger.warning("[2FA] 首次 OTP 被拒绝，重新获取最新验证码后再试一次")
             from core.email_provider import wait_for_otp
-            logger.info("[2FA] 自动等待邮箱重认证 OTP...")
-            otp_code = wait_for_otp(email, after_ts=reauth_otp_after_ts)
-            logger.info("[2FA] 已收到邮箱重认证 OTP")
-        else:
-            logger.info("")
-            logger.info("[2FA] 请检查邮箱，输入新收到的 6 位验证码")
-            otp_code = input(">>> 2FA 验证码: ").strip()
-            logger.info("[2FA] 已手动输入邮箱重认证 OTP")
-
-    human_delay("otp_input")
-    logger.info("[2FA] 正在提交邮箱重认证 OTP...")
-    try:
-        continue_url = _validate_reauth_otp(session, otp_code)
-    except Exception as first_exc:
-        # 部分取码接口会短暂返回缓存中的上一封邮件。若服务端拒绝验证码，
-        # 重新轮询一次并提交最新候选，避免第一次旧码直接终止整个 2FA 流程。
-        status_code = getattr(getattr(first_exc, "response", None), "status_code", None)
-        if status_code != 401 or not bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", False)):
-            raise
-        logger.warning("[2FA] 首次 OTP 被拒绝，重新获取最新验证码后再试一次")
-        from core.email_provider import wait_for_otp
-        retry_settle = max(8, int(getattr(_email_cfg, "OTP_SETTLE_SECONDS", 5) or 5))
-        fresh_otp = wait_for_otp(
-            email,
-            after_ts=reauth_otp_after_ts,
-            settle_seconds=retry_settle,
-        )
-        if fresh_otp == otp_code:
-            logger.warning("[2FA] 重试仍获取到相同 OTP=%s，继续提交以保留原始错误信息", fresh_otp)
-        else:
-            logger.info("[2FA] 已获取新的 OTP=%s，替换首次候选", fresh_otp)
-        otp_code = fresh_otp
-        continue_url = _validate_reauth_otp(session, otp_code)
-    logger.info("[2FA] 邮箱重认证 OTP 验证通过，continue_url=%s", continue_url)
-    human_delay("api")
-    logger.info("[2FA] 正在交换新 token...")
-    new_token = _exchange_new_token(session, continue_url)
-    logger.info("[2FA] 已拿到新 token")
-    human_delay("api")
+            retry_settle = max(8, int(getattr(_email_cfg, "OTP_SETTLE_SECONDS", 5) or 5))
+            fresh_otp = wait_for_otp(
+                email,
+                after_ts=reauth_otp_after_ts,
+                settle_seconds=retry_settle,
+            )
+            if fresh_otp == otp_code:
+                logger.warning("[2FA] 重试仍获取到相同 OTP=%s，继续提交以保留原始错误信息", fresh_otp)
+            else:
+                logger.info("[2FA] 已获取新的 OTP=%s，替换首次候选", fresh_otp)
+            otp_code = fresh_otp
+            continue_url = _validate_reauth_otp(session, otp_code)
+        logger.info("[2FA] 邮箱重认证 OTP 验证通过，continue_url=%s", continue_url)
+        human_delay("api")
+        logger.info("[2FA] 正在交换新 token...")
+        new_token = _exchange_new_token(session, continue_url)
+        logger.info("[2FA] 已拿到新 token")
+        human_delay("api")
 
     # 阶段二：enroll + activate
     logger.info("[2FA] 阶段2：开始 enroll TOTP")
@@ -630,6 +638,11 @@ def save_account_data(
     """
     from core.db import insert_account
     extra = dict(extra or {})
+    if email_source == "moemail":
+        from core.moemail_client import get_account_context_metadata
+        metadata = get_account_context_metadata(email)
+        if metadata:
+            extra["email_service"] = metadata
     # Remail 的 service token 只存在进程内上下文中。注册成功后把订单上下文
     # 一并保存到账号 extra_json，服务重启时查活即可恢复，不再依赖“同一进程
     # 中先领取邮箱”。普通账号列表不会返回 extra_json。
@@ -686,35 +699,33 @@ def save_account_data(
     )
     logger.info("[Save] 账号及凭证已保存到 SQLite, id=%s, email=%s", row_id, email)
 
-    auto_twofa = False
-    try:
-        from config import twofa as _twofa_cfg
-
-        auto_twofa = bool(getattr(_twofa_cfg, "ENABLE_2FA", False))
-    except Exception:
-        auto_twofa = False
-    if auto_twofa and not str(totp_secret or "").strip():
+    from config import twofa as _twofa_cfg
+    from config import register as _register_cfg
+    auto_password = bool(getattr(_register_cfg, "ENABLE_PASSWORD_SETUP", False))
+    auto_twofa = bool(getattr(_twofa_cfg, "ENABLE_2FA", False)) and not str(totp_secret or "").strip()
+    if auto_password or auto_twofa:
         try:
-            from core.twofa_service import enqueue_account_totp_setup
-
-            queued = enqueue_account_totp_setup(
-                account_id=row_id,
-                email=email,
-                access_token=access_token,
-                trigger="registration_auto",
-                proxy=proxy_used,
+            from core.twofa_service import enqueue_account_security_setup
+            queued = enqueue_account_security_setup(
+                account_id=row_id, email=email, access_token=access_token, proxy=proxy_used,
+                trigger="registration_auto", password_enabled=auto_password, totp_enabled=auto_twofa,
             )
             if queued.get("accepted"):
-                logger.info(f"[2FA] 注册后自动开启 2FA 已入队: id={row_id}, email={email}")
+                logger.info("[账号安全] 注册后协议任务已入队：id=%s 密码=%s 2FA=%s（按顺序执行）",
+                            row_id, auto_password, auto_twofa)
             elif queued.get("busy"):
-                logger.info(f"[2FA] 账号已有 2FA 任务，注册流程不重复入队: id={row_id}, email={email}")
+                logger.info("[账号安全] 账号已有任务，不重复入队：id=%s", row_id)
             else:
-                logger.warning(f"[2FA] 注册后自动开启 2FA 入队失败（不影响注册结果）: {email}, {queued.get('error')}")
+                error = queued.get("error") or "账号安全任务未能入队"
+                if auto_password:
+                    from core.db import update_account_password_setup
+                    update_account_password_setup(row_id, {"status": "failed", "error": error})
+                if auto_twofa:
+                    from core.db import update_account_totp_secret
+                    update_account_totp_secret(row_id, {"status": "failed", "error": error})
+                logger.warning("[账号安全] 入队失败，不影响注册结果：%s", error)
         except Exception as exc:
-            logger.warning(
-                f"[2FA] 注册后自动开启 2FA 入队异常（不影响注册结果）: "
-                f"{email}, {type(exc).__name__}: {str(exc)[:180]}"
-            )
+            logger.warning("[账号安全] 入队异常，不影响注册结果：%s", type(exc).__name__)
 
     if auto_plan_check is None:
         try:

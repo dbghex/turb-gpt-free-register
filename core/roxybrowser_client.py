@@ -230,13 +230,13 @@ class RoxyBrowserClient:
             "enotfound",
         ))
 
-    def request(self, method: str, path: str, *, params: dict | None = None, json_body: dict | None = None) -> dict:
+    def request(self, method: str, path: str, *, params: dict | None = None, json_body: dict | None = None, timeout: float | None = None, attempts: int | None = None) -> dict:
         url = _join_url(self.api_base, path)
         method_u = method.upper()
         # create 超时后服务端可能已创建环境，不能按普通网络错误盲目重试；只有
         # Roxy 明确返回“创建前上游 TLS/Socket 建连失败”时才允许安全重试。
         is_create = str(path or "").rstrip("/").endswith("/create") or "browser/create" in str(path or "")
-        max_attempts = max(1, int(getattr(_cfg, "ROXY_API_RETRIES", 3) or 3))
+        max_attempts = max(1, int(attempts if attempts is not None else (getattr(_cfg, "ROXY_API_RETRIES", 3) or 3)))
         base_delay = max(0.5, float(getattr(_cfg, "ROXY_API_RETRY_DELAY", 2) or 2))
         last_exc: Exception | None = None
         for attempt in range(1, max_attempts + 1):
@@ -250,7 +250,7 @@ class RoxyBrowserClient:
                     url,
                     params=params or None,
                     json=json_body if json_body is not None else None,
-                    timeout=max(5, int(getattr(_cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90)),
+                    timeout=timeout if timeout is not None else max(5, int(getattr(_cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90)),
                 )
                 text = resp.text or ""
                 try:
@@ -426,7 +426,17 @@ class RoxyBrowserClient:
             if key in seen:
                 continue
             seen.add(key)
-            ok, payload = self.try_request(m, path)
+            try:
+                payload = self.request(m, path, timeout=5, attempts=1)
+                ok = True
+            except (requests.ConnectionError, requests.Timeout) as exc:
+                raise RuntimeError(
+                    "无法连接 Roxy 本地 API。请确认 RoxyBrowser 已启动并开启 API，"
+                    "且 API 地址可从 WebUI 后端访问；127.0.0.1 指 WebUI 后端所在机器，"
+                    "不是访问网页的电脑。"
+                ) from exc
+            except Exception as exc:
+                ok, payload = False, f"{type(exc).__name__}: {exc}"
             if not ok:
                 errors.append({"method": m, "path": path, "error": payload})
                 continue

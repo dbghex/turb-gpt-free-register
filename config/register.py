@@ -10,7 +10,10 @@ from config.env_loader import apply_env_overrides
 # 注册邮箱（留空 + USE_EMAIL_SERVICE=True 时从 Outlook 池领取）
 REGISTER_EMAIL = ""
 
-# 注册密码（OTP-only 流程已不需要，留作备用）
+# 注册后通过协议设置登录密码；固定密码留空时，每账号随机生成。
+ENABLE_PASSWORD_SETUP = False
+
+# 固定登录密码（至少12字符；仅通过秘密配置读取）
 REGISTER_PASSWORD = ""
 
 # 用户名（注册完成后设置的显示名称，留空会自动生成 "Foo Bar" 形式）
@@ -28,6 +31,8 @@ POST_REGISTER_DWELL_SECONDS_RANGE = "18,45"
 # ---- .env overrides for WebUI editable fields ----
 apply_env_overrides(globals(), {
     'REGISTER_EMAIL': 'str',
+    'REGISTER_PASSWORD': 'str',
+    'ENABLE_PASSWORD_SETUP': 'bool',
     'REGISTER_NAME': 'str',
     'AUTO_PLAN_CHECK_AFTER_REGISTER': 'bool',
     'POST_REGISTER_DWELL_SECONDS_RANGE': 'str',

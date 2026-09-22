@@ -125,6 +125,7 @@ from config.proxy import (
 
 # ---------- 注册默认信息 ----------
 from config.register import (
+    ENABLE_PASSWORD_SETUP,
     REGISTER_EMAIL,
     REGISTER_PASSWORD,
     REGISTER_NAME,
@@ -134,6 +135,7 @@ from config.register import (
 
 # ---------- 邮箱服务 ----------
 from config.email import (
+    MOEMAIL_API_BASE, MOEMAIL_API_KEY, MOEMAIL_DOMAIN, MOEMAIL_REQUEST_TIMEOUT,
     USE_EMAIL_SERVICE,
     EMAIL_SOURCE,
     OUTLOOK_ACCOUNTS_FILE,
@@ -278,7 +280,8 @@ __all__ = [
     "take_registration_proxy", "take_registration_proxies", "registration_proxy_pool_status",
     "ProxyPoolError", "ProxyPoolEmptyError", "ProxyPoolInsufficientError",
     # register
-    "REGISTER_EMAIL", "REGISTER_PASSWORD", "REGISTER_NAME",
+    "MOEMAIL_API_BASE", "MOEMAIL_API_KEY", "MOEMAIL_DOMAIN", "MOEMAIL_REQUEST_TIMEOUT",
+    "REGISTER_EMAIL", "REGISTER_PASSWORD", "REGISTER_NAME", "ENABLE_PASSWORD_SETUP",
     # email
     "USE_EMAIL_SERVICE", "EMAIL_SOURCE",
     "OUTLOOK_ACCOUNTS_FILE", "OUTLOOK_API_BASE",
