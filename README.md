@@ -987,3 +987,28 @@ MIT
 注册时将邮箱来源设置为 `moemail`；换绑时在单个或批量换绑窗口选择「MoeMail（永久邮箱）」，无需修改注册邮箱来源。所有生成请求固定 `expiryTime=0`，随机生成独立地址。邮箱 ID 立即保存到 SQLite，换绑成功后与账号关联，重启后查活、密码设置和 2FA 均可继续收码。
 
 生成请求超时只查询原候选地址，不重复 POST；换绑失败不删除远端永久邮箱，也不自动分配给其他账号。可在换绑日志中查看新邮箱。更换 API 服务地址后，旧地址的邮箱不会把当前 API Key 发往历史地址；请恢复匹配的服务配置后收码。
+
+### 独立查资格：国家 checkout 报价
+
+安装依赖后，将 `checkout.example.yaml` 复制为 `checkout.yaml`，填写各国代理。“查套餐”只查询当前套餐与试用资格；账号“更多 → 查资格”独立执行 checkout/init，按 `plans` 顺序读取应付金额和付款方式，不以 Free 或试用资格为门槛，也不会确认支付。注册后自动查套餐保持原行为。缺少或无效的 YAML 只影响查资格，不影响查套餐。
+
+查资格沿用查套餐的超时、重试次数和退避配置。会话预热及结账前请求在同一设备会话中保留 Cookie 重试；checkout 明确返回 403/429 时重新生成 Sentinel 后重试。checkout POST 发生网络超时后不会重发，因为创建结果未确认。Stripe init 对临时失败重试，不重复创建 checkout。
+
+每国使用自身 `billing_details` 和代理池；`proxy.enabled: true` 时代理只从该国轮询选择，缺少代理则该国失败，不直连回退。`false` 时明确直连。配置在入队时读取，修改只影响下一次查询。敏感配置 `checkout.yaml` 已加入 Git 忽略。
+
+checkout 请求体按 `plus.har` 发送 `entry_point`、`plan_name`、`billing_details` 和 `promo_campaign`，不发送 `checkout_ui_mode`；同时执行优惠券预检。国家和币种使用配置实际值，不固定为示例中的 KR/KRW。Stripe 分支在 checkout 返回会话 ID 后调用 `/v1/payment_pages/{session}/init`，从 `invoice.amount_due` 和 `payment_method_types` 读取应付金额及方式。
+
+结果逐国保存到 SQLite；套餐栏仅以绿色文字逐行显示确认的零元报价，例如：
+
+```text
+IN   card · link · upi   0 INR
+PH   card · link         0 PHP
+BR   link · pix · card   0 BRL
+VN   card · link         0 VND
+```
+
+金额来自 `checkout_state.total.total.minorUnitsAmount`，按服务端精度或已知币种精度换算，缺失金额不会记为零元。方式来自 `payment_method_types` 和可识别的 `custom_payment_methods`，不包含 Stripe 钱包候选能力。价格是当前账单信息下的报价，不保证支付成功；税费可能随账单地址更新。
+
+账号备注只保存人工内容，旧版本写入的报价会从备注展示中移除。非零金额、未知金额和失败结果不会显示在套餐栏，仍保存在查询记录中。重复查询替换国家结果；国家级错误不影响其他国家。创建请求超时标记结果未确认，不自动重发；进程重启保留完成结果并标记未完成项中断。
+
+本功能使用当前账号会话进行认证，不复制 HAR 中的历史 Cookie、客户密钥或校验凭证。服务端要求额外会话验证时记录该国错误，不绕过访问校验。

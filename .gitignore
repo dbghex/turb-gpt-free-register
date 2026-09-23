@@ -82,6 +82,7 @@ Thumbs.db
 *.local.*
 
 # Local secrets
+checkout.yaml
 .env
 .env.*
 !.env.example

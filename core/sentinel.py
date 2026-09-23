@@ -121,7 +121,7 @@ def generate_fingerprint_data(device_id: str, attempt: int = 1, elapsed_ms: floa
         random.choice(window_keys),       # [12] 随机window key
         round(perf_now, 10),             # [13] performance.now()
         sid,                             # [14] sid
-        "",                              # [15] URL search params (注册页面通常为空)
+        str(profile.get("url_search") or ""), # [15] URL search params
         hardware_concurrency,            # [16] hardwareConcurrency
         round(time_origin, 1),           # [17] performance.timeOrigin
         int(window_flags.get("ai", 0)),                 # [18] Number("ai" in window)

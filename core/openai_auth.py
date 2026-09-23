@@ -9,6 +9,7 @@ import logging
 import random
 import secrets
 import time
+from urllib.parse import parse_qsl, urlsplit
 
 from config import openai_protocol as _protocol_cfg
 from core.session import BrowserSession
@@ -298,7 +299,8 @@ def follow_authorize(session: BrowserSession, authorize_url: str) -> str:
     raise last_exc if last_exc else RuntimeError("步骤4 重试耗尽但无异常记录")
 
 
-def request_sentinel_token(session: BrowserSession, flow: str) -> dict:
+def request_sentinel_token(session: BrowserSession, flow: str, *, sentinel_origin: str = "https://sentinel.openai.com",
+                           page_url: str | None = None) -> dict:
     """
     步骤6/9/11: 请求 Sentinel Token。
     POST https://sentinel.openai.com/backend-api/sentinel/req
@@ -314,7 +316,11 @@ def request_sentinel_token(session: BrowserSession, flow: str) -> dict:
         sentinel 响应 JSON，包含 token、turnstile、proofofwork 等
     """
     iframe_flow = flow == "username_password_create"
-    context_name = "password" if iframe_flow else "top_level"
+    sentinel_origin = sentinel_origin.rstrip("/")
+    chatgpt_flow = flow == "chatgpt_checkout" and sentinel_origin == "https://chatgpt.com"
+    if sentinel_origin not in {"https://sentinel.openai.com", "https://chatgpt.com"}:
+        raise ValueError("不支持的 Sentinel origin")
+    context_name = f"{sentinel_origin}:{'password' if iframe_flow else 'top_level'}"
     ready_contexts = getattr(session, "_sentinel_frame_contexts", None)
     if not isinstance(ready_contexts, set):
         ready_contexts = set()
@@ -323,16 +329,34 @@ def request_sentinel_token(session: BrowserSession, flow: str) -> dict:
         # 成功浏览器在两个 SDK 实例首次 req 前都会装载同一个 Sentinel iframe。
         # 放在 authorize 后按需执行，避免预检阶段制造不存在的跨站访问序列。
         from config import SENTINEL_SV
-        frame_url = f"https://sentinel.openai.com/backend-api/sentinel/frame.html?sv={SENTINEL_SV}"
-        frame_headers = session.get_sentinel_frame_headers(user_initiated=iframe_flow)
+        frame_url = f"{sentinel_origin}/backend-api/sentinel/frame.html?sv={SENTINEL_SV}"
+        if chatgpt_flow:
+            page_url = page_url or "https://chatgpt.com/"
+            versioned_sdk = f"https://chatgpt.com/sentinel/{SENTINEL_SV}/sdk.js"
+            sdk_headers = session._get_common_headers()
+            sdk_headers["referer"] = page_url
+            sdk_resp = _request_with_proxy_retry(session, f"Sentinel versioned SDK:{flow}",
+                lambda: session.get(versioned_sdk, headers=sdk_headers, allow_redirects=False))
+            if int(getattr(sdk_resp, "status_code", 0) or 0) >= 400:
+                raise RuntimeError(f"ChatGPT Sentinel versioned SDK 加载失败：HTTP {sdk_resp.status_code}")
+            frame_headers = session.get_chatgpt_navigate_headers(referer=page_url, user_initiated=False)
+            frame_headers["sec-fetch-dest"] = "iframe"
+            frame_headers["sec-fetch-site"] = "same-origin"
+        else:
+            frame_headers = session.get_sentinel_frame_headers(user_initiated=iframe_flow)
         frame_resp = _request_with_proxy_retry(
             session,
             f"Sentinel iframe:{flow}",
             lambda: session.get(frame_url, headers=frame_headers, allow_redirects=True),
         )
+        if chatgpt_flow:
+            sdk_resp = _request_with_proxy_retry(session, f"Sentinel versioned SDK:{flow}",
+                lambda: session.get(versioned_sdk, headers=sdk_headers, allow_redirects=False))
+            if int(getattr(sdk_resp, "status_code", 0) or 0) >= 400:
+                raise RuntimeError(f"ChatGPT Sentinel versioned SDK 加载失败：HTTP {sdk_resp.status_code}")
         ready_contexts.add(context_name)
 
-    url = "https://sentinel.openai.com/backend-api/sentinel/req"
+    url = f"{sentinel_origin}/backend-api/sentinel/req"
 
     # 生成 p 字段（浏览器指纹）
     sentinel_sid = getattr(
@@ -344,9 +368,14 @@ def request_sentinel_token(session: BrowserSession, flow: str) -> dict:
     profile["build_id"] = None
     # frame.html 自身位于 /backend-api/，但真实 SDK 在生成 p[5] 时抽到的是
     # 带版本号的 /sentinel/<sv>/sdk.js。密码 iframe 与后续顶层 context 相同。
-    profile["script_src_samples"] = [
-        f"https://sentinel.openai.com/sentinel/{__import__('config', fromlist=['SENTINEL_SV']).SENTINEL_SV}/sdk.js"
-    ]
+    if chatgpt_flow:
+        profile["script_src_samples"] = ["https://chatgpt.com/cdn-cgi/challenge-platform/scripts/jsd/api.js?onload=jsdOnload"]
+        profile["url_search"] = ",".join(dict.fromkeys(k for k, _ in parse_qsl(urlsplit(page_url or "").query)))
+    else:
+        sdk_host = "sentinel.openai.com"
+        profile["script_src_samples"] = [
+            f"https://{sdk_host}/sentinel/{__import__('config', fromlist=['SENTINEL_SV']).SENTINEL_SV}/sdk.js"
+        ]
     context_p = getattr(session, "_sentinel_context_p", None)
     if not isinstance(context_p, dict):
         context_p = {}
@@ -359,7 +388,14 @@ def request_sentinel_token(session: BrowserSession, flow: str) -> dict:
     # 构建请求体
     body = build_sentinel_request_body(p, session.device_id, flow)
 
-    headers = session.get_sentinel_headers()
+    if chatgpt_flow:
+        headers = session._get_common_headers()
+        headers.update({"accept": "*/*", "content-type": "text/plain;charset=UTF-8",
+                        "origin": "https://chatgpt.com", "referer": frame_url,
+                        "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors",
+                        "sec-fetch-dest": "empty", "priority": "u=1, i"})
+    else:
+        headers = session.get_sentinel_headers()
 
     logger.info(f"[Sentinel] 请求 sentinel token, flow={flow}")
     resp = _request_with_proxy_retry(
@@ -374,12 +410,23 @@ def request_sentinel_token(session: BrowserSession, flow: str) -> dict:
         # 作为 cachedProof 交回 SDK，不能用 VM 内重新采样出来的另一份 proof。
         data = dict(data)
         data["_request_p"] = p
+        if chatgpt_flow:
+            data["_page_url"] = page_url
     logger.info(f"[Sentinel] 获取 sentinel token 成功, persona={data.get('persona')}")
 
     if data.get("proofofwork", {}).get("required"):
         seed = data["proofofwork"]["seed"]
         difficulty = data["proofofwork"]["difficulty"]
         logger.info(f"[Sentinel] 需要 PoW: seed={seed}, difficulty={difficulty}")
+
+    if chatgpt_flow:
+        try:
+            ping_headers = session._get_common_headers()
+            ping_headers["referer"] = page_url
+            session.post(f"{sentinel_origin}/backend-api/sentinel/ping", headers=ping_headers,
+                         json={}, allow_redirects=False, timeout=10)
+        except Exception as exc:
+            logger.debug("[Sentinel] checkout 前 ping 未完成：%s", type(exc).__name__)
 
     # 增强诊断：哪些反爬机制被要求
     requires = []
@@ -460,7 +507,7 @@ def request_password_sentinel_bundle(session: BrowserSession) -> dict:
     return responses["username_password_create"]
 
 
-def build_sentinel_header(session: BrowserSession, sentinel_resp: dict, flow: str) -> tuple:
+def build_sentinel_header(session: BrowserSession, sentinel_resp: dict, flow: str, *, page_url: str | None = None) -> tuple:
     """
     根据 sentinel 响应构建 openai-sentinel-token 和 openai-sentinel-so-token 请求头值。
 
@@ -495,7 +542,14 @@ def build_sentinel_header(session: BrowserSession, sentinel_resp: dict, flow: st
         react_listening_key=getattr(session, "react_listening_key", None),
         react_container_key=getattr(session, "react_container_key", None),
         react_resources_key=getattr(session, "react_resources_key", None),
-        cookie=session.auth_cookie_header() if hasattr(session, "auth_cookie_header") else f"oai-did={session.device_id}",
+        cookie=(
+            session.chatgpt_cookie_header()
+            if flow == "chatgpt_checkout" and hasattr(session, "chatgpt_cookie_header")
+            else session.auth_cookie_header()
+            if hasattr(session, "auth_cookie_header")
+            else f"oai-did={session.device_id}"
+        ),
+        page_url=page_url or (sentinel_resp.get("_page_url") if isinstance(sentinel_resp, dict) else None),
     )
 
     # 解析 runner 输出，单独抽出 so 字段填充 openai-sentinel-so-token
@@ -518,6 +572,15 @@ def build_sentinel_header(session: BrowserSession, sentinel_resp: dict, flow: st
             logger.info(f"[Sentinel] 检测到 SO 字段，已构建 so-token 头")
     except (ValueError, TypeError) as exc:
         logger.warning(f"[Sentinel] runner 输出解析失败: {exc}")
+
+    if flow == "chatgpt_checkout":
+        try:
+            ping_headers = session._get_common_headers()
+            ping_headers["referer"] = page_url or sentinel_resp.get("_page_url") or "https://chatgpt.com/"
+            session.post("https://chatgpt.com/backend-api/sentinel/ping", headers=ping_headers,
+                         json={}, allow_redirects=False, timeout=10)
+        except Exception as exc:
+            logger.debug("[Sentinel] checkout 完成后 ping 未完成：%s", type(exc).__name__)
 
     return header_value, so_header
 

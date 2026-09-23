@@ -151,6 +151,27 @@
     .status-partial_success { color: #9a6700; background: #fff7d6; }
     .status-running { color: var(--amber); background: #fff7e6; }
     .status-success { color: var(--green); background: #e9f7ef; }
+    .checkout-quote-ledger {
+      margin-top: 7px; padding: 3px 8px; max-width: 260px;
+      border-left: 2px solid #2bb8a6; border-radius: 0 6px 6px 0;
+      background: #f1fbf8;
+    }
+    .checkout-quote-row {
+      display: grid; grid-template-columns: 25px minmax(0, 1fr) auto;
+      align-items: center; gap: 7px; min-height: 29px;
+      color: #247d6d; font-size: 12px; line-height: 1.25;
+    }
+    .checkout-quote-row + .checkout-quote-row { border-top: 1px solid #dcefe9; }
+    .checkout-quote-country {
+      color: #147a68; font: 700 12px/1.2 ui-monospace, "JetBrains Mono", Consolas, monospace;
+      letter-spacing: .03em;
+    }
+    .checkout-quote-methods { min-width: 0; overflow-wrap: anywhere; }
+    .checkout-quote-price {
+      color: #107363; font: 700 13px/1.2 ui-monospace, "JetBrains Mono", Consolas, monospace;
+      font-variant-numeric: tabular-nums; white-space: nowrap;
+    }
+    .checkout-quote-price span { color: #247d6d; font-size: 11px; font-weight: 600; }
     .extract-link-cell {
       display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
       margin-top: 4px; max-width: 100%;
@@ -258,6 +279,9 @@
     .accounts-table .col-password { width: 120px; }
     .accounts-table .col-plan { width: 300px; }
     .accounts-table .col-note { width: 150px; }
+    .account-note-text { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; line-height: 1.45; }
+    .account-note-status { margin-bottom: 4px; color: var(--muted); font-size: 11px; white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }
+    .account-note-reason { margin-top: 4px; color: #b54708; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
     .accounts-table .col-small { width: 168px; }
     .accounts-table .col-status { width: 88px; }
     .accounts-table .col-agent { width: 220px; }
@@ -1503,6 +1527,25 @@ function _planCell(r) {
   if (r.discount_promo_campaign_id) detail.push(`优惠: ${r.discount_promo_campaign_id}`);
   return `<span class="pill ${cls}" title="${esc(detail.join('；'))}">${esc(text)}</span>`;
 }
+function _isPlanCheckBusy(r) {
+  return ['queued', 'running'].includes(r?.plan_check_status) || ['queued', 'running'].includes(r?.checkout_status);
+}
+function _checkoutZeroQuotesCell(r) {
+  const quotes = Array.isArray(r.checkout_zero_quotes) ? r.checkout_zero_quotes : [];
+  if (r.checkout_results_stale || !quotes.length) return '';
+  const lines = quotes.map(q => {
+    const country = String(q.country || '').toUpperCase();
+    const currency = String(q.currency || '').toUpperCase();
+    const methods = Array.isArray(q.payment_method_types) ? q.payment_method_types.map(m => String(m).toLowerCase()) : [];
+    const label = `${country} · ${methods.join('、')} · 0 ${currency}`;
+    return `<div class="checkout-quote-row" title="${esc(label)}"><span class="checkout-quote-country">${esc(country)}</span><span class="checkout-quote-methods">${esc(methods.join(' · '))}</span><strong class="checkout-quote-price">0 <span>${esc(currency)}</span></strong></div>`;
+  });
+  return `<div class="checkout-quote-ledger" aria-label="零元结账报价">${lines.join('')}</div>`;
+}
+function _accountNoteCell(r) {
+  const note = String(r.note || '');
+  return note ? `<div class="account-note-text">${esc(note)}</div>` : '<span class="muted">-</span>';
+}
 function _planAction(r) {
   if (['queued','running'].includes(r.plan_check_status)) {
     const automatic = r.plan_check_trigger === 'registration_auto';
@@ -1510,12 +1553,13 @@ function _planAction(r) {
     const label = automatic ? (queued ? '自动查询排队中…' : '自动查询中…') : (queued ? '查询排队中…' : '查询中…');
     return `<button data-plan-check="${esc(r.id)}" disabled title="套餐查询正在执行，完成后可再次查询">${label}</button>`;
   }
-  return `<button data-plan-check="${esc(r.id)}" title="查询当前套餐；free 账号会检查 Plus 试用资格">查套餐</button>`;
+  if (['queued', 'running'].includes(r.checkout_status)) {
+    return `<button data-plan-check="${esc(r.id)}" disabled title="各国家结账报价正在查询，完成后可再次查询">结账报价${r.checkout_status === 'queued' ? '排队中' : '查询中'}…</button>`;
+  }
+  return `<button data-plan-check="${esc(r.id)}" title="仅查询当前套餐与 Plus 试用资格">查套餐</button>`;
 }
 function _gcashEligibilityPassed(r) {
-  return String(r.gcash_eligibility_status || '') === 'success'
-    && r.gcash_eligibility_ok === true
-    && String(r.gcash_eligibility_outcome || '').toLowerCase() === 'eligible';
+  return r.checkout_gcash_eligible === true;
 }
 function _extractEligibility(r, linkType = ACTIVE_EXTRACT_LINK_TYPE) {
   linkType = String(linkType || ACTIVE_EXTRACT_LINK_TYPE || 'upi').toLowerCase();
@@ -1524,29 +1568,10 @@ function _extractEligibility(r, linkType = ACTIVE_EXTRACT_LINK_TYPE) {
   const gcash = linkType === 'gcash' && _gcashEligibilityPassed(r);
   return { ok: plusTrial || gcash, plusTrial, gcash, linkType };
 }
-function _gcashEligibilityCell(r) {
-  const s = String(r.gcash_eligibility_status || '');
-  if (s === 'queued') return '<span class="pill status-running">GCash资格排队</span>';
-  if (s === 'running') return '<span class="pill status-running">GCash资格查询中</span>';
-  if (!s) return '';
-  const reason = r.gcash_eligibility_reason || r.gcash_eligibility_error || r.gcash_eligibility_message || '';
-  if (_gcashEligibilityPassed(r)) {
-    const checks = [
-      r.gcash_eligibility_valid === true ? 'Session有效' : '',
-      r.gcash_eligibility_payment_method_available === true ? 'GCash可用' : '',
-      r.gcash_eligibility_checkout_amount_is_zero === true ? '$0结账' : '',
-    ].filter(Boolean);
-    const detail = checks.join(' · ') || reason || '资格校验全部通过';
-    return `<div class="gcash-eligibility-cell" title="${esc(reason || r.gcash_eligibility_checked_at || detail)}"><span class="pill status-success">GCash资格：通过</span><div class="gcash-eligibility-detail">${esc(detail)}</div></div>`;
-  }
-  if (s === 'success' && !['eligible', 'ineligible'].includes(String(r.gcash_eligibility_outcome || '').toLowerCase())) return `<div class="extract-link-cell"><span class="pill status-failed" title="${esc(reason)}">GCash资格：需重试</span>${reason ? `<div class="extract-link-error" title="${esc(reason)}">${esc(reason)}</div>` : ''}</div>`;
-  if (s === 'success') return `<div class="extract-link-cell"><span class="pill status-used" title="${esc(reason)}">GCash资格：未通过</span>${reason ? `<div class="extract-link-error" title="${esc(reason)}">${esc(reason)}</div>` : ''}</div>`;
-  return `<div class="extract-link-cell"><span class="pill status-failed" title="${esc(reason)}">GCash资格：查询失败</span>${reason ? `<div class="extract-link-error" title="${esc(reason)}">${esc(reason)}</div>` : ''}</div>`;
-}
-function _gcashEligibilityAction(r) {
-  const s = String(r.gcash_eligibility_status || '');
-  if (s === 'queued' || s === 'running') return `<button data-gcash-eligibility="${esc(r.id)}" disabled>${s === 'queued' ? '资格查询排队中…' : '资格查询中…'}</button>`;
-  return `<button data-gcash-eligibility="${esc(r.id)}" title="查询该账号是否具备 GCash（PH/PHP）支付资格">查资格(GCash)</button>`;
+function _checkoutEligibilityAction(r) {
+  const status = String(r.checkout_status || '');
+  if (_isPlanCheckBusy(r)) return `<button data-checkout-eligibility="${esc(r.id)}" disabled>${status === 'queued' ? '查资格排队中…' : '查资格中…'}</button>`;
+  return `<button data-checkout-eligibility="${esc(r.id)}" title="按配置国家查询结账金额和付款方式，零元结果显示在套餐栏">查资格</button>`;
 }
 function _fmtExtractExpire(v) {
   if (!v) return '';
@@ -1646,15 +1671,15 @@ function renderAccounts() {
       <td>${esc(r.email_source || '-')}</td>
       <td><span class="mono" title="列表仅显示预览，完整 Token 请点复制">${r.has_access_token ? '有Token' : '<span class="muted">无Token</span>'}</span>${_liveStatusSub(r)}</td>
       <td>${r.password ? `<span class="mono" title="${esc(r.password)}">${esc(short(r.password, 18))}</span>` : '<span class="muted">-</span>'}</td>
-      <td>${_planCell(r)}<div class="gcash-eligibility-slot">${_gcashEligibilityCell(r)}</div><div class="sub-cell">${_extractLinkCell(r)}</div></td>
-      <td class="wrap" title="${esc(r.note || '')}">${r.note ? esc(short(r.note, 80)) : '<span class="muted">-</span>'}</td>
+      <td>${_planCell(r)}${_checkoutZeroQuotesCell(r)}<div class="sub-cell">${_extractLinkCell(r)}</div></td>
+      <td class="wrap">${_accountNoteCell(r)}</td>
       <td>${_totpAction(r)}</td>
       <td>${_codexCell(r)}</td>
       <td class="muted">${esc(r.created_at || '-')}</td>
       <td class="actions actions-cell">
         <div class="account-row-actions">
           <div class="account-action-group"><button class="primary" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" ${r.has_access_token ? '' : 'disabled'}>复制Token</button> <button class="good" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button></div>
-          <div class="account-action-group"><button data-account-note="${esc(r.id)}" title="设置/清空该账号备注">备注</button> <button data-account-change-email="${esc(r.id)}">换绑邮箱</button> <button data-account-change-email-log="${esc(r.id)}">换绑日志</button> <button data-account-live-check="${esc(r.id)}" title="重新登录该账号，成功则刷新最新 AT/accessToken">查活</button> <button data-account-live-log="${esc(r.email)}" title="查看该账号最近一次查活日志">查活日志</button> <button data-account-totp-log="${esc(r.email)}" title="查看该账号最近一次 2FA 设置日志">2FA日志</button> ${_planAction(r)} ${_gcashEligibilityAction(r)} ${_extractLinkAction(r)}</div>
+          <div class="account-action-group"><button data-account-note="${esc(r.id)}" title="设置/清空该账号备注">备注</button> <button data-account-change-email="${esc(r.id)}">换绑邮箱</button> <button data-account-change-email-log="${esc(r.id)}">换绑日志</button> <button data-account-live-check="${esc(r.id)}" title="重新登录该账号，成功则刷新最新 AT/accessToken">查活</button> <button data-account-live-log="${esc(r.email)}" title="查看该账号最近一次查活日志">查活日志</button> <button data-account-totp-log="${esc(r.email)}" title="查看该账号最近一次 2FA 设置日志">2FA日志</button> ${_planAction(r)} ${_checkoutEligibilityAction(r)} ${_extractLinkAction(r)}</div>
           <div class="account-action-group">${_codexAction(r)} <button data-codex-log="${esc(r.email)}" title="查看该账号最近一次 Codex 补跑日志">补跑日志</button></div>
           <div class="account-action-group danger-zone"><button data-account-archive="${esc(r.id)}" data-archived="${r.archived ? '0' : '1'}" title="${r.archived ? '恢复到默认账号列表' : '归档后默认账号列表不再显示'}">${r.archived ? '恢复' : '归档'}</button> <button class="danger" data-account-delete="${esc(r.id)}" data-email="${esc(r.email)}">删除</button></div>
         </div>
@@ -1685,7 +1710,7 @@ function updateAccountSelectionUi(pageRows = null) {
   if (stopCodexBulkBtn) stopCodexBulkBtn.disabled = ACCOUNT_SELECTED.size === 0;
   if (downloadCpaBtn) downloadCpaBtn.disabled = ACCOUNT_SELECTED.size === 0;
   if (extractLinksBtn) extractLinksBtn.disabled = ACCOUNT_SELECTED.size === 0;
-  if (checkPlanBtn) checkPlanBtn.disabled = ACCOUNT_SELECTED.size === 0;
+  if (checkPlanBtn) checkPlanBtn.disabled = ACCOUNT_SELECTED.size === 0 || ACCOUNTS.some(r => ACCOUNT_SELECTED.has(Number(r.id)) && _isPlanCheckBusy(r));
   if (copySelectedBtn) copySelectedBtn.disabled = ACCOUNT_SELECTED.size === 0;
   if (copySelectedTokensBtn) copySelectedTokensBtn.disabled = ACCOUNT_SELECTED.size === 0;
   if (downloadTxtBtn) downloadTxtBtn.disabled = ACCOUNT_SELECTED.size === 0;
@@ -1900,9 +1925,9 @@ $('#accountsBody').addEventListener('click', async (e) => {
     await checkOnePlan(Number(planBtn.dataset.planCheck), planBtn);
     return;
   }
-  const gcashBtn = e.target.closest('[data-gcash-eligibility]');
-  if (gcashBtn) {
-    await checkOneGcashEligibility(Number(gcashBtn.dataset.gcashEligibility), gcashBtn);
+  const eligibilityBtn = e.target.closest('[data-checkout-eligibility]');
+  if (eligibilityBtn) {
+    await checkOneEligibility(Number(eligibilityBtn.dataset.checkoutEligibility), eligibilityBtn);
     return;
   }
 
@@ -2363,17 +2388,17 @@ async function checkOnePlan(id, btn) {
     btn.textContent = old;
   }
 }
-async function checkOneGcashEligibility(id, btn) {
+async function checkOneEligibility(id, btn) {
   btn.disabled = true;
   const old = btn.textContent;
   btn.textContent = '查询中…';
   try {
-    const r = await api('/api/accounts/check-gcash-eligibility', {
+    const r = await api('/api/accounts/check-eligibility', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({account_id: id}),
     });
-    showToast(r.message || 'GCash 资格查询已加入后台队列');
+    showToast(r.message || '查资格已加入后台队列');
     await pollAccountPlanStatuses();
   } catch (err) {
     showToast(err.message);
@@ -2387,7 +2412,7 @@ async function extractOneLink(id, btn) {
   if (!acc) { showToast('账号不存在'); return; }
   const eligibility = _extractEligibility(acc, btn?.dataset?.linkType || ACTIVE_EXTRACT_LINK_TYPE);
   if (!eligibility.ok) {
-    showToast(eligibility.linkType === 'gcash' ? '请先确认账号通过 GCash 资格查询' : '仅支持 free(可Plus试用) 账号提链');
+    showToast(eligibility.linkType === 'gcash' ? '请先查资格并确认 PH 报价为零元且支持 GCash' : '仅支持 free(可Plus试用) 账号提链');
     return;
   }
   if (!confirm(`确定为该账号提链吗？\n\n${acc.email || ('#' + id)}\n\n提链类型：${eligibility.linkType.toUpperCase()}，成功会消耗 1 次 CDK。`)) return;
@@ -2758,7 +2783,7 @@ async function deleteSelectedAccounts() {
 async function editAccountNote(id, btn) {
   const acc = ACCOUNTS.find(a => Number(a.id) === Number(id));
   if (!acc) { showToast('账号不存在'); return; }
-  const note = prompt(`设置账号备注（留空可清空）\n\n${acc.email || ('#' + id)}`, acc.note || '');
+  const note = prompt(`设置人工备注（留空可清空）\n\n${acc.email || ('#' + id)}`, acc.manual_note ?? acc.note ?? '');
   if (note === null) return;
   if (note.length > 2000) { showToast('备注最多 2000 个字符'); return; }
   btn.disabled = true;
@@ -2768,7 +2793,7 @@ async function editAccountNote(id, btn) {
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({note}),
     });
-    showToast(note ? '备注已保存' : '备注已清空');
+    showToast(note ? '人工备注已保存' : '人工备注已清空');
     loadAccounts();
   } catch(err) {
     showToast('保存备注失败: ' + err.message);
@@ -2779,7 +2804,7 @@ async function editAccountNote(id, btn) {
 async function noteSelectedAccounts() {
   const ids = Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
-  const note = prompt(`给选中的 ${ids.length} 个账号设置统一备注（留空可清空）`, '');
+  const note = prompt(`给选中的 ${ids.length} 个账号设置统一人工备注（留空可清空）`, '');
   if (note === null) return;
   if (note.length > 2000) { showToast('备注最多 2000 个字符'); return; }
   const btn = $('#btnNoteSelectedAccounts');

@@ -1,0 +1,22 @@
+entry_point: all_plans_pricing_modal
+plan_name: chatgptplusplan
+promo_campaign:
+  promo_campaign_id: plus-1-month-free
+  is_coupon_from_query_param: false
+checkout_ui_mode: custom
+proxy:
+  enabled: true
+  strategy: round_robin
+plans:
+  IN:
+    billing_details: {country: IN, currency: INR}
+    proxy_pool: []
+  PH:
+    billing_details: {country: PH, currency: PHP}
+    proxy_pool: []
+  BR:
+    billing_details: {country: BR, currency: BRL}
+    proxy_pool: []
+  VN:
+    billing_details: {country: VN, currency: VND}
+    proxy_pool: []

@@ -365,6 +365,64 @@ def _retry_wait_seconds(resp: Any, base_delay: float, attempt: int) -> float:
     return max(0.0, min(30.0, base_delay * attempt))
 
 
+def prepare_checkout_auth_context(token: str):
+    """Prepare checkout cookies and browser identity without querying plan APIs."""
+    from core.checkout_quotes import capture_plan_context
+
+    token = normalize_token(token)
+    if not token:
+        raise ValueError("账号缺少 access_token")
+    claims = token_claims(token)
+    if claims.get("token_expired") is True:
+        raise ValueError("AT 已过期，请先查活刷新")
+    route = resolve_plan_check_route()
+    timeout_seconds, attempts, base_delay = _plan_check_settings(None, None, None)
+    env = None
+    relay = None
+    try:
+        effective_proxy, relay = open_plan_check_proxy(
+            route, route["proxy"], timeout=timeout_seconds)
+        identity = str(claims.get("email") or claims.get("account_id") or token[:32]).lower()
+        env = BrowserSession(proxy=effective_proxy, detect_exit_geo=True,
+                             fingerprint_seed=f"checkout:{identity}:{uuid.uuid4()}")
+        for attempt in range(1, attempts + 1):
+            response = None
+            try:
+                response = env.get(
+                    "https://chatgpt.com/",
+                    headers=env.get_chatgpt_navigate_headers(
+                        referer="https://chatgpt.com/", user_initiated=False),
+                    allow_redirects=True, timeout=timeout_seconds,
+                )
+                status = int(response.status_code)
+                if status < 400:
+                    break
+                if not _retryable_plan_error(status) or attempt >= attempts:
+                    raise RuntimeError(f"查资格会话预热失败：HTTP {status}")
+                failure = f"HTTP {status}"
+            except Exception as exc:
+                if isinstance(exc, RuntimeError) and str(exc).startswith("查资格会话预热失败："):
+                    raise
+                if attempt >= attempts:
+                    raise RuntimeError(f"查资格会话预热失败（{type(exc).__name__}）") from exc
+                failure = type(exc).__name__
+            _clear_plan_circuit(env)
+            wait_seconds = _retry_wait_seconds(response, base_delay, attempt)
+            logger.warning("[Checkout] 会话预热临时失败，第 %s/%s 次，保留 session/deviceId/CF Cookie，%.1fs 后重试：%s",
+                           attempt, attempts, wait_seconds, failure)
+            if wait_seconds > 0:
+                time.sleep(wait_seconds)
+        return capture_plan_context(env, token, claims)
+    finally:
+        if env is not None:
+            try:
+                close_browser_session(env)
+            except Exception:
+                logger.debug("[Checkout] 关闭预热会话失败", exc_info=True)
+        if relay is not None:
+            relay.close()
+
+
 def check_account_plan(
     token: str,
     *,
@@ -373,6 +431,7 @@ def check_account_plan(
     timeout: float | None = None,
     max_attempts: int | None = None,
     retry_delay: float | None = None,
+    auth_context_sink=None,
 ) -> dict:
     token = normalize_token(token)
     if not token:
@@ -491,6 +550,14 @@ def check_account_plan(
                         parsed["retryable"] = False
                         parsed["timezone_offset_min"] = effective_tz
                         parsed.update(route_meta)
+                        if auth_context_sink is not None:
+                            try:
+                                from core.checkout_quotes import capture_plan_context
+                                auth_context_sink(capture_plan_context(env, token, claims))
+                            except Exception:
+                                # Quote context is optional; do not retry a successful
+                                # plan check or mix credentials into its public result.
+                                logger.warning("[Plan] 未能保留后续报价所需的会话上下文")
                         return parsed
             except Exception as exc:
                 logger.debug("套餐查询失败: %s: %s", type(exc).__name__, exc, exc_info=True)

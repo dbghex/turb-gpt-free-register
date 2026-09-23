@@ -22,7 +22,7 @@ from urllib.parse import quote, quote_plus, urlparse
 from flask import Flask, Response, jsonify, make_response, render_template, request
 import pyotp
 
-from core import codex_retry_service, db, plan_check_service, extract_link_service, codex_agent_service, live_check_service, gcash_eligibility_service
+from core import codex_retry_service, db, plan_check_service, extract_link_service, codex_agent_service, live_check_service
 from webui.auth import init_auth, register_auth_routes
 from core import registration_service as svc
 from webui import config_editor
@@ -278,11 +278,11 @@ def _compact_account_for_list(row: dict) -> dict:
 
     # 这些是列表固定列直接展示字段。
     for key in (
-        "user_name", "email_source", "original_email", "note", "archived", "created_at",
+        "user_name", "email_source", "original_email", "note", "manual_note", "archived", "created_at",
+        "checkout_note", "checkout_status", "checkout_reason", "checkout_revision",
+        "checkout_checked_at", "checkout_results_stale", "checkout_progress_completed", "checkout_progress_total", "checkout_gcash_eligible", "checkout_zero_quotes",
         "plan_type", "current_plan_type", "plus_trial_eligible",
         "plan_check_status", "codex_status", "codex_agent_status",
-        "gcash_eligibility_status", "gcash_eligibility_ok", "gcash_eligibility_outcome",
-        "gcash_eligibility_reason", "gcash_eligibility_message", "gcash_eligibility_checked_at",
         "totp_setup_status", "password_setup_status", "password_setup_error", "password_setup_message",
     ):
         if key in row:
@@ -301,9 +301,6 @@ def _compact_account_for_list(row: dict) -> dict:
         # 查活状态。
         "live_check_status", "live_check_error", "live_checked_at",
         "live_check_device_id", "live_check_proxy_used", "live_check_fingerprint_text",
-        "gcash_eligibility_valid", "gcash_eligibility_payment_method_available",
-        "gcash_eligibility_checkout_amount_is_zero", "gcash_eligibility_eligible",
-        "gcash_eligibility_retryable", "gcash_eligibility_error",
         # 提链成功/失败时才需要。
         "extract_link_status", "extract_link_type", "extract_link_message", "extract_link_error", "extract_link_error_code",
         "extract_link_long_url", "extract_link_copy_paste", "extract_link_image_url_png",
@@ -497,9 +494,6 @@ def create_app(auth_code: str | None = None) -> Flask:
     recovered_plan_checks = db.recover_interrupted_plan_checks()
     if recovered_plan_checks:
         logger.warning("已恢复 %s 个因 WebUI 重启中断的套餐查询状态", recovered_plan_checks)
-    recovered_gcash_checks = db.recover_interrupted_gcash_eligibility()
-    if recovered_gcash_checks:
-        logger.warning("已恢复 %s 个因 WebUI 重启中断的 GCash 资格查询状态", recovered_gcash_checks)
     recovered_extract_links = db.recover_interrupted_extract_links()
     if recovered_extract_links:
         logger.warning("已恢复 %s 个因 WebUI 重启中断的提链状态", recovered_extract_links)
@@ -1147,9 +1141,9 @@ def create_app(auth_code: str | None = None) -> Flask:
             return jsonify({"ok": False, **queued}), 503
         return jsonify({"ok": True, "started": True, **queued}), 202
 
-    @app.post("/api/accounts/check-gcash-eligibility")
-    def api_account_check_gcash_eligibility():
-        """查询单账号 GCash（PH/PHP）0 元试用资格。Body {account_id|id}."""
+    @app.post("/api/accounts/check-eligibility")
+    def api_account_check_eligibility():
+        """独立查询 checkout.yaml 中的各国金额和付款方式。"""
         data = request.get_json(silent=True) or {}
         acc_id = data.get("account_id") or data.get("id")
         try:
@@ -1161,16 +1155,14 @@ def create_app(auth_code: str | None = None) -> Flask:
         token = str(acc.get("access_token") or "").strip()
         if not token:
             return jsonify({"ok": False, "error": "该账号没有 access_token，请先查活刷新 AT"}), 400
-        queued = gcash_eligibility_service.enqueue_account_gcash_eligibility(
+        queued = plan_check_service.enqueue_account_checkout_check(
             account_id=int(acc.get("id")),
-            email=acc.get("email") or "",
             access_token=token,
-            trigger="manual",
         )
         if queued.get("busy"):
             return jsonify({"ok": False, **queued}), 409
         if not queued.get("accepted"):
-            code = 400 if "CDK" in str(queued.get("error") or "") or "提链" in str(queued.get("error") or "") else 503
+            code = 400 if "checkout.yaml" in str(queued.get("error") or "") else 503
             return jsonify({"ok": False, **queued}), code
         return jsonify({"ok": True, "started": True, **queued}), 202
 
@@ -1249,11 +1241,8 @@ def create_app(auth_code: str | None = None) -> Flask:
             return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 400
 
     def _is_gcash_extract_eligible(acc: dict) -> bool:
-        return bool(
-            acc.get("gcash_eligibility_status") == "success"
-            and acc.get("gcash_eligibility_ok") is True
-            and str(acc.get("gcash_eligibility_outcome") or "").strip().lower() == "eligible"
-        )
+        """Use a current PH zero checkout containing GCash instead of the retired API."""
+        return db._checkout_gcash_eligible(acc)
 
     def _is_extract_eligible(acc: dict, link_type: str) -> bool:
         plan = str(acc.get("current_plan_type") or acc.get("plan_type") or "").lower()
@@ -1263,7 +1252,7 @@ def create_app(auth_code: str | None = None) -> Flask:
 
     def _extract_ineligible_message(link_type: str) -> str:
         if link_type == "gcash":
-            return "GCash 提链要求账号为 free(可Plus试用)，或先执行查资格(GCash)并确认通过"
+            return "GCash 提链要求账号为 free(可Plus试用)，或先执行查资格并确认 PH 为零元且支持 GCash"
         return "仅支持 free(可Plus试用) 账号提链；请先查询套餐确认资格"
 
     @app.post("/api/accounts/extract-link")

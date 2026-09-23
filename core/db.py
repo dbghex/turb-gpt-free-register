@@ -793,16 +793,106 @@ def _find_by_email(rows: list[dict], email: str) -> dict | None:
     return next((r for r in rows if (r.get("email") or "").lower() == target), None)
 
 
+def _manual_note(row: dict) -> str:
+    if "manual_note" in row:
+        return str(row.get("manual_note") or "")
+    original = str(row.get("note") or "")
+    generated = str(row.get("checkout_note") or "")
+    return original[:-len(generated)].rstrip("\n") if generated and original.endswith(generated) else original
+
+
+def _clear_checkout_note(row: dict) -> None:
+    """Remove legacy generated quote text while preserving the user's note."""
+    row["manual_note"] = _manual_note(row)
+    row["note"] = row["manual_note"]
+    row["checkout_note"] = ""
+
+
+def _checkout_zero_quotes(row: dict) -> list[dict]:
+    if row.get("checkout_results_stale"):
+        return []
+    return [{"country": quote.get("country"), "currency": quote.get("currency"),
+             "payment_method_types": quote.get("payment_method_types") or []}
+            for quote in (row.get("checkout_quotes") or {}).get("results") or []
+            if quote.get("status") in {"success", "partial"} and type(quote.get("amount_minor")) is int
+            and quote["amount_minor"] == 0]
+
+
+def _checkout_gcash_eligible(row: dict) -> bool:
+    if row.get("checkout_results_stale"):
+        return False
+    for quote in (row.get("checkout_quotes") or {}).get("results") or []:
+        if (quote.get("country") == "PH" and quote.get("currency") == "PHP"
+                and quote.get("status") in {"success", "partial"}
+                and quote.get("amount_minor") == 0
+                and "gcash" in {str(m).lower() for m in quote.get("payment_method_types") or []}):
+            return True
+    return False
+
+
+def update_checkout_run(acc_id: int, run_id: str, *, status: str | None = None,
+                        reason: str = "", results: list[dict] | None = None,
+                        config_summary: dict | None = None, finish: bool = False) -> bool:
+    """Run-scoped atomic merge; obsolete workers cannot replace current results."""
+    with _LOCK:
+        rows = _load_accounts()
+        row = next((r for r in rows if int(r.get("id") or 0) == int(acc_id)), None)
+        if row is None or row.get("plan_run_id") != run_id or row.get("plan_run_status") not in {"queued", "running"}:
+            return False
+        now = _now()
+        row["plan_run_heartbeat"] = now
+        if status:
+            row["checkout_status"] = status
+            row["checkout_reason"] = reason
+            row["checkout_revision"] = int(row.get("checkout_revision") or 0) + 1
+        if results is not None:
+            old = row.get("checkout_quotes") or {}
+            if old.get("run_id") != run_id and old.get("results"):
+                row["checkout_previous_quotes"] = old
+            row["checkout_quotes"] = {"run_id": run_id, "config": config_summary or {}, "results": results, "checked_at": now}
+            row["checkout_progress_total"] = len(results)
+            row["checkout_progress_completed"] = sum(r.get("status") not in {"queued", "running"} for r in results)
+            row["checkout_checked_at"] = now
+            row["checkout_results_stale"] = False
+            _clear_checkout_note(row)
+        if finish:
+            row["plan_run_status"] = "finished"
+        row["updated_at"] = now
+        _save_accounts(rows)
+        return True
+
+
+def update_plan_run_lifecycle(acc_id: int, run_id: str, *, finish: bool = False) -> bool:
+    """Refresh or finish a plan task without touching checkout state."""
+    with _LOCK:
+        rows = _load_accounts()
+        row = next((r for r in rows if int(r.get("id") or 0) == int(acc_id)), None)
+        if row is None or row.get("plan_run_id") != run_id or row.get("plan_run_status") not in {"queued", "running"}:
+            return False
+        now = _now()
+        row["plan_run_heartbeat"] = now
+        if finish:
+            row["plan_run_status"] = "finished"
+        row["updated_at"] = now
+        _save_accounts(rows)
+        return True
+
+
 def _decorate_account(row: dict) -> dict:
     out = dict(row)
-    out["note"] = out.get("note") or ""
+    out["note"] = _manual_note(row)
     out["note_updated_at"] = out.get("note_updated_at") or ""
+    out["manual_note"] = _manual_note(row)
+    out["checkout_note"] = ""
+    out["checkout_results_stale"] = bool(row.get("checkout_results_stale"))
+    out["checkout_zero_quotes"] = _checkout_zero_quotes(row)
+    out["checkout_gcash_eligible"] = _checkout_gcash_eligible(row)
     plan_status = out.get("plan_check_status")
     if plan_status in {"queued", "running"}:
         try:
             stamp_key = "plan_check_queued_at" if plan_status == "queued" else "plan_check_started_at"
             stale_after = _PLAN_CHECK_QUEUE_STALE_SECONDS if plan_status == "queued" else _PLAN_CHECK_STALE_SECONDS
-            started_at = datetime.fromisoformat(str(out.get(stamp_key) or ""))
+            started_at = datetime.fromisoformat(str(out.get("plan_run_heartbeat") or out.get(stamp_key) or ""))
             if (datetime.now() - started_at).total_seconds() >= stale_after:
                 out["plan_check_status"] = "failed"
                 out["plan_check_error"] = "上次套餐查询状态已超时，可重新查询"
@@ -1268,6 +1358,7 @@ def claim_account_plan_check(
     acc_id: int | None = None,
     email: str | None = None,
     trigger: str = "manual",
+    run_id: str | None = None,
 ) -> bool:
     """原子占用账号的套餐查询；已有未超时查询时返回 False。"""
     with _LOCK:
@@ -1281,6 +1372,13 @@ def claim_account_plan_check(
         if row is None:
             return False
 
+        if row.get("plan_run_status") in {"queued", "running"}:
+            try:
+                age = (datetime.now() - datetime.fromisoformat(row.get("plan_run_heartbeat") or "")).total_seconds()
+                if age < _PLAN_CHECK_QUEUE_STALE_SECONDS:
+                    return False
+            except (TypeError, ValueError):
+                return False
         current_status = row.get("plan_check_status")
         if current_status in {"queued", "running"}:
             try:
@@ -1300,17 +1398,56 @@ def claim_account_plan_check(
         row["plan_check_completed_at"] = None
         row["plan_check_error"] = None
         row["updated_at"] = now
+        if run_id:
+            row.update(plan_run_id=run_id, plan_run_status="queued", plan_run_heartbeat=now)
         _save_accounts(accounts)
         return True
 
 
-def mark_account_plan_check_running(acc_id: int) -> bool:
+def claim_account_checkout(acc_id: int, run_id: str) -> bool:
+    """Reserve an independent checkout task without altering plan status."""
+    with _LOCK:
+        rows = _load_accounts()
+        row = next((r for r in rows if int(r.get("id") or 0) == int(acc_id)), None)
+        if row is None:
+            return False
+        if row.get("checkout_status") in {"queued", "running"} or row.get("plan_check_status") in {"queued", "running"}:
+            return False
+        if row.get("plan_run_status") in {"queued", "running"}:
+            return False
+        now = _now()
+        row.update(plan_run_id=run_id, plan_run_status="queued", plan_run_heartbeat=now,
+                   checkout_status="queued", checkout_reason="等待国家报价",
+                   checkout_results_stale=bool((row.get("checkout_quotes") or {}).get("results")),
+                   checkout_progress_completed=0, checkout_progress_total=0,
+                   updated_at=now)
+        _save_accounts(rows)
+        return True
+
+
+def mark_account_checkout_running(acc_id: int, run_id: str) -> bool:
+    with _LOCK:
+        rows = _load_accounts()
+        row = next((r for r in rows if int(r.get("id") or 0) == int(acc_id)), None)
+        if row is None or row.get("plan_run_id") != run_id or row.get("checkout_status") != "queued":
+            return False
+        row.update(plan_run_status="running", plan_run_heartbeat=_now(),
+                   checkout_status="running", checkout_reason="正在建立账号会话", updated_at=_now())
+        _save_accounts(rows)
+        return True
+
+
+def mark_account_plan_check_running(acc_id: int, run_id: str | None = None) -> bool:
     """把已排队的套餐查询标记为执行中。"""
     with _LOCK:
         accounts = _load_accounts()
         row = next((r for r in accounts if int(r.get("id") or 0) == int(acc_id)), None)
         if row is None or row.get("plan_check_status") not in {"queued", "running"}:
             return False
+        if run_id and row.get("plan_run_id") != run_id:
+            return False
+        if run_id:
+            row.update(plan_run_status="running", plan_run_heartbeat=_now())
         row["plan_check_status"] = "running"
         row["plan_check_started_at"] = _now()
         row["plan_check_error"] = None
@@ -1326,6 +1463,23 @@ def recover_interrupted_plan_checks() -> int:
         recovered = 0
         now = _now()
         for row in accounts:
+            if row.get("plan_run_status") in {"queued", "running"}:
+                row["plan_run_status"] = "interrupted"
+                row["updated_at"] = now
+                recovered += 1
+            if row.get("checkout_status") in {"queued", "running"}:
+                row.update(checkout_status="interrupted", checkout_reason="服务重启，未完成国家不自动重放")
+                quotes = row.get("checkout_quotes") or {}
+                if quotes.get("run_id") == row.get("plan_run_id") and not row.get("checkout_results_stale"):
+                    for item in quotes.get("results", []):
+                        if item.get("status") in {"queued", "running"}:
+                            item.update(status="interrupted", error="服务重启，结果未确认")
+                    _clear_checkout_note(row)
+                    row["checkout_progress_completed"] = len(quotes.get("results", []))
+                    row["checkout_progress_total"] = len(quotes.get("results", []))
+                row["checkout_revision"] = int(row.get("checkout_revision") or 0) + 1
+                row["updated_at"] = now
+                recovered += 1
             if row.get("plan_check_status") not in {"queued", "running"}:
                 continue
             row["plan_check_status"] = "failed"
@@ -1339,7 +1493,8 @@ def recover_interrupted_plan_checks() -> int:
         return recovered
 
 
-def update_account_plan_check(acc_id: int | None = None, email: str | None = None, result: dict | None = None) -> bool:
+def update_account_plan_check(acc_id: int | None = None, email: str | None = None, result: dict | None = None,
+                              run_id: str | None = None) -> bool:
     """更新账号套餐/Plus 试用资格查询结果。"""
     result = result or {}
     with _LOCK:
@@ -1353,6 +1508,8 @@ def update_account_plan_check(acc_id: int | None = None, email: str | None = Non
         if row is None:
             return False
 
+        if run_id and row.get("plan_run_id") != run_id:
+            return False
         ok = bool(result.get("ok"))
         row["plan_check_status"] = "success" if ok else "failed"
         row["plan_check_ok"] = ok
@@ -1420,99 +1577,7 @@ def update_account_plan_check(acc_id: int | None = None, email: str | None = Non
         return True
 
 
-def claim_account_gcash_eligibility(acc_id: int, trigger: str = "manual") -> bool:
-    """原子占用单账号 GCash 资格查询，独立于套餐查询状态。"""
-    with _LOCK:
-        accounts = _load_accounts()
-        row = next((r for r in accounts if int(r.get("id") or 0) == int(acc_id)), None)
-        if row is None:
-            return False
-        status = str(row.get("gcash_eligibility_status") or "")
-        if status in {"queued", "running"}:
-            try:
-                stamp = row.get("gcash_eligibility_started_at") if status == "running" else row.get("gcash_eligibility_queued_at")
-                if stamp and (datetime.now() - datetime.fromisoformat(str(stamp))).total_seconds() < (_PLAN_CHECK_STALE_SECONDS if status == "running" else _PLAN_CHECK_QUEUE_STALE_SECONDS):
-                    return False
-            except (TypeError, ValueError):
-                return False
-        now = _now()
-        row.update({
-            "gcash_eligibility_status": "queued",
-            "gcash_eligibility_trigger": str(trigger or "manual"),
-            "gcash_eligibility_queued_at": now,
-            "gcash_eligibility_started_at": None,
-            "gcash_eligibility_completed_at": None,
-            "gcash_eligibility_error": None,
-            "updated_at": now,
-        })
-        _save_accounts(accounts)
-        return True
 
-
-def mark_account_gcash_eligibility_running(acc_id: int) -> bool:
-    with _LOCK:
-        accounts = _load_accounts()
-        row = next((r for r in accounts if int(r.get("id") or 0) == int(acc_id)), None)
-        if row is None or row.get("gcash_eligibility_status") not in {"queued", "running"}:
-            return False
-        row["gcash_eligibility_status"] = "running"
-        row["gcash_eligibility_started_at"] = _now()
-        row["gcash_eligibility_error"] = None
-        row["updated_at"] = _now()
-        _save_accounts(accounts)
-        return True
-
-
-def recover_interrupted_gcash_eligibility() -> int:
-    with _LOCK:
-        accounts = _load_accounts()
-        now = _now()
-        recovered = 0
-        for row in accounts:
-            if row.get("gcash_eligibility_status") not in {"queued", "running"}:
-                continue
-            row.update({
-                "gcash_eligibility_status": "failed",
-                "gcash_eligibility_ok": False,
-                "gcash_eligibility_error": "WebUI 重启导致 GCash 资格查询中断，请重新查询",
-                "gcash_eligibility_completed_at": now,
-                "updated_at": now,
-            })
-            recovered += 1
-        if recovered:
-            _save_accounts(accounts)
-        return recovered
-
-
-def update_account_gcash_eligibility(acc_id: int, result: dict | None = None) -> bool:
-    result = result or {}
-    with _LOCK:
-        accounts = _load_accounts()
-        row = next((r for r in accounts if int(r.get("id") or 0) == int(acc_id)), None)
-        if row is None:
-            return False
-        query_ok = bool(result.get("query_ok", result.get("ok")))
-        eligible = bool(result.get("qualification_ok", result.get("eligible")))
-        row.update({
-            "gcash_eligibility_status": "success" if query_ok else "failed",
-            "gcash_eligibility_ok": eligible,
-            "gcash_eligibility_outcome": result.get("outcome"),
-            "gcash_eligibility_valid": result.get("valid"),
-            "gcash_eligibility_payment_method_available": result.get("payment_method_available"),
-            "gcash_eligibility_checkout_amount_is_zero": result.get("checkout_amount_is_zero"),
-            "gcash_eligibility_eligible": result.get("eligible"),
-            "gcash_eligibility_reason": result.get("reason"),
-            "gcash_eligibility_message": result.get("message"),
-            "gcash_eligibility_retryable": result.get("retryable"),
-            "gcash_eligibility_http_status": result.get("http_status"),
-            "gcash_eligibility_checked_at": result.get("checked_at") or _now(),
-            "gcash_eligibility_completed_at": _now(),
-            "gcash_eligibility_error": None if query_ok else result.get("error"),
-            "gcash_eligibility_result_json": json.dumps({k: v for k, v in result.items() if k not in {"eligibility_proof", "access_token", "cdk"}}, ensure_ascii=False),
-            "updated_at": _now(),
-        })
-        _save_accounts(accounts)
-        return True
 
 
 def claim_account_extract(acc_id: int, trigger: str = "manual", link_type: str = "pix") -> bool:
@@ -1739,20 +1804,15 @@ def list_account_plan_check_statuses(
     """返回不含 Token/邮箱密码的套餐查询轻量状态快照。"""
     fields = (
         "id", "email", "archived",
+        "note", "manual_note", "checkout_note", "checkout_status", "checkout_reason",
+        "checkout_revision", "checkout_checked_at", "checkout_results_stale",
+        "checkout_progress_completed", "checkout_progress_total", "checkout_gcash_eligible", "checkout_zero_quotes",
         "plan_type", "current_plan_type", "plus_trial_eligible",
         "plan_check_status", "plan_check_ok", "plan_check_error",
         "plan_check_trigger", "plan_check_queued_at", "plan_check_started_at",
         "plan_check_completed_at", "plan_checked_at", "plan_last_success_at",
         "plan_check_network_route", "plan_check_proxy_used", "plan_check_proxy_fallback_reason",
         "live_check_device_id", "live_check_proxy_used", "live_check_fingerprint_text",
-        "gcash_eligibility_status", "gcash_eligibility_ok", "gcash_eligibility_outcome",
-        "gcash_eligibility_valid", "gcash_eligibility_payment_method_available",
-        "gcash_eligibility_checkout_amount_is_zero", "gcash_eligibility_eligible",
-        "gcash_eligibility_reason", "gcash_eligibility_message", "gcash_eligibility_retryable",
-        "gcash_eligibility_http_status", "gcash_eligibility_checked_at",
-        "gcash_eligibility_trigger",
-        "gcash_eligibility_queued_at", "gcash_eligibility_started_at", "gcash_eligibility_completed_at",
-        "gcash_eligibility_error",
         "expires_at", "plan_expires_at", "plan_renews_at", "renews_at",
         "billing_period", "billing_currency", "discount_amount", "discount_type",
         "discount_expires_at", "discount_promo_campaign_id",
@@ -1801,7 +1861,9 @@ def list_account_plan_check_statuses(
                 value = row.get(key)
                 if key in ("id", "email"):
                     continue
-                if value is not None and value != "":
+                if key in {"note", "manual_note", "checkout_note", "checkout_reason"}:
+                    item[key] = value or ""
+                elif value is not None and value != "":
                     item[key] = value
             item["totp_enabled"] = bool(str(row.get("totp_secret") or "").strip())
             plan = str(row.get("current_plan_type") or row.get("plan_type") or "").lower()
@@ -1820,16 +1882,17 @@ def list_account_plan_check_statuses(
                 {
                     "id": row.get("id"),
                     "updated_at": row.get("updated_at"),
+                    "note": row.get("note"),
+                    "checkout_revision": row.get("checkout_revision"),
+                    "checkout_status": row.get("checkout_status"),
+                    "checkout_results_stale": row.get("checkout_results_stale"),
+                    "checkout_gcash_eligible": _checkout_gcash_eligible(row),
                     "plan_check_status": row.get("plan_check_status"),
                     "plan_check_ok": row.get("plan_check_ok"),
                     "plan_check_error": row.get("plan_check_error"),
                     "current_plan_type": row.get("current_plan_type"),
                     "plan_type": row.get("plan_type"),
                     "plus_trial_eligible": row.get("plus_trial_eligible"),
-                    "gcash_eligibility_status": row.get("gcash_eligibility_status"),
-                    "gcash_eligibility_ok": row.get("gcash_eligibility_ok"),
-                    "gcash_eligibility_outcome": row.get("gcash_eligibility_outcome"),
-                    "gcash_eligibility_reason": row.get("gcash_eligibility_reason"),
                     "extract_link_status": row.get("extract_link_status"),
                     "codex_status": row.get("codex_status"),
                     "codex_phone_verified": row.get("codex_phone_verified"),
@@ -1942,7 +2005,9 @@ def update_account_note(acc_id: int, note: str) -> bool:
         if row is None:
             return False
         now = _now()
-        row["note"] = str(note or "")
+        row["manual_note"] = str(note or "")
+        row["note"] = row["manual_note"]
+        row["checkout_note"] = ""
         row["note_updated_at"] = now
         row["updated_at"] = now
         _save_accounts(rows)
@@ -2350,10 +2415,12 @@ def update_accounts_note(account_ids: list[int] | None, note: str) -> tuple[list
             row_id = int(row.get("id") or 0)
             if row_id not in ids:
                 continue
+            row["manual_note"] = text
             row["note"] = text
+            row["checkout_note"] = ""
             row["note_updated_at"] = now
             row["updated_at"] = now
-            updated.append({"id": row_id, "email": row.get("email"), "note": text, "note_updated_at": now})
+            updated.append({"id": row_id, "email": row.get("email"), "note": row["note"], "manual_note": text, "note_updated_at": now})
             seen_ids.add(row_id)
         for item in ids - seen_ids:
             skipped.append({"id": item, "reason": "账号不存在"})

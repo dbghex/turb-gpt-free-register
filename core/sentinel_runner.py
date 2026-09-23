@@ -58,6 +58,7 @@ _FLOW_PAGE_URL = {
     "email_otp_validate": "https://auth.openai.com/email-verification",
     "authorize_continue": "https://auth.openai.com/email-verification",
     "oauth_create_account": "https://auth.openai.com/about-you",
+    "chatgpt_checkout": "https://chatgpt.com/",
 }
 
 # Node 子进程超时（秒）。sdk.js 内部可能要做 PoW，留充裕一点
@@ -211,7 +212,9 @@ def generate_sentinel_token(
             # challenge 请求的初始 p[5] 都来自版本化 SDK；最终提交头则由
             # Auth 页包装 SDK 生成：密码/资料页为 backend-api，OTP 页为版本化地址。
             "--script-src", (
-                f"https://sentinel.openai.com/sentinel/{SENTINEL_SV}/sdk.js"
+                "https://chatgpt.com/cdn-cgi/challenge-platform/scripts/jsd/api.js?onload=jsdOnload"
+                if flow == "chatgpt_checkout"
+                else f"https://sentinel.openai.com/sentinel/{SENTINEL_SV}/sdk.js"
                 if flow == "email_otp_validate"
                 else "https://sentinel.openai.com/backend-api/sentinel/sdk.js"
             ),

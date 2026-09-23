@@ -110,12 +110,6 @@ class StorageMergeTests(unittest.TestCase):
             with patch.multiple(db, **paths, _SQLITE_READY=False, _SQLITE_READY_PATH=None):
                 self.assertTrue(db.get_account(1)["gcash_eligibility_ok"])
                 self.assertTrue(db.is_account_codex_phone_verified(legacy["email"]))
-                self.assertTrue(db.claim_account_gcash_eligibility(1))
-                self.assertTrue(db.mark_account_gcash_eligibility_running(1))
-                self.assertTrue(db.update_account_gcash_eligibility(1, {
-                    "query_ok": True, "qualification_ok": True, "eligible": True,
-                    "outcome": "eligible", "eligibility_proof": "secret-proof",
-                }))
                 self.assertTrue(db.update_account_codex_phone_verified(legacy["email"], source="hero"))
                 db.update_account_note(1, "preserved note")
                 job = db.create_job("imap", proxy_used="socks5://example.test:1080", sms_snapshot={
@@ -129,7 +123,6 @@ class StorageMergeTests(unittest.TestCase):
                 self.assertEqual(account["note"], "preserved note")
                 self.assertEqual(account["codex_phone_verified_source"], "hero")
                 self.assertTrue(account["gcash_eligibility_ok"])
-                self.assertNotIn("secret-proof", account["gcash_eligibility_result_json"])
                 self.assertEqual(json.loads(account["extra_json"])["registration_password"], "test-password")
                 saved_job = db.get_job(job["id"])
                 self.assertEqual(saved_job["network_traffic"], {"total_bytes": 123})
