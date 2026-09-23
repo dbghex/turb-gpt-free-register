@@ -47,6 +47,12 @@ class _Session:
 
 
 class GenericApiPublicInboxTests(unittest.TestCase):
+    def setUp(self):
+        from core import generic_api_mail_client
+        patcher = patch.object(generic_api_mail_client._email_cfg, "GENERIC_API_PROXY", "")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_short_link_polling_reads_nested_korean_preview(self):
         email = "test@icloud.com"
         account = GenericApiEmailAccount(email, "https://mail.example/u/token")

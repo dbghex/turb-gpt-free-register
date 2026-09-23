@@ -10,39 +10,11 @@
     - socks5://            SOCKS5（DNS 本地解析，可能泄漏）
     - socks5h://           SOCKS5（DNS 在代理端解析，推荐，避免 DNS-IP 错配）
 """
-from config.env_loader import apply_env_overrides, env_write_lock, read_env_file, _write_env_values_locked, _coerce_env_value
 import random
 import hashlib
+from urllib.parse import quote, urlparse
 
-
-_PROXY_SCHEMES = {"http", "https", "socks5", "socks5h"}
-
-
-def normalize_proxy_url(value: str | None, *, default_scheme: str = "http") -> str:
-    """规范化代理池条目为 URL。
-
-    支持：
-      - ``user:pass@host:port``（无协议头，默认 HTTP）
-      - ``http(s)://user:pass@host:port``
-      - ``socks5[h]://user:pass@host:port``
-      - 旧格式 ``host:port:user:pass``
-    """
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    scheme = str(default_scheme or "http").strip().lower() or "http"
-    if scheme not in _PROXY_SCHEMES:
-        scheme = "http"
-    if "://" in text:
-        return text
-    if "@" in text:
-        return f"{scheme}://{text}"
-    # 兼容旧代理池的 host:port:user:pass 写法。
-    parts = text.split(":")
-    if len(parts) == 4 and all(parts):
-        host, port, username, password = parts
-        return f"{scheme}://{username}:{password}@{host}:{port}"
-    return f"{scheme}://{text}"
+from config.env_loader import apply_env_overrides, env_write_lock, read_env_file, _write_env_values_locked, _coerce_env_value
 
 
 # 本地代理入口；实际出口地区以代理/分流规则为准。
@@ -51,16 +23,24 @@ PROXY_POOL = [
     "socks5://127.0.0.1:7897",
 ]
 
+# 代理池使用的本地上游代理。填写后形成：本地上游 -> 代理池目标代理 -> ChatGPT；
+# 留空则直接使用代理池中的目标代理，不启动链式中继。
+PROXY_POOL_UPSTREAM_PROXY = ""
+
 # 套餐/Plus 试用资格查询与 Codex Agent Token 生成共用这组独立网络策略，
 # 避免批量请求被注册代理池中的临时本地代理拖垮，也避免无条件直连造成出口策略失控。
-#   auto   = 优先使用 PLAN_CHECK_PROXY 或代理池；本地代理端口未监听时回退直连
+#   auto   = 优先使用 PLAN_CHECK_PROXY 或代理池；没有代理时才按 direct 运行
 #   proxy  = 强制使用 PLAN_CHECK_PROXY 或代理池，失败直接报错
 #   direct = 始终直连
 PLAN_CHECK_PROXY_MODE = "auto"
 
 # 套餐查询 / Codex Agent Token 生成专用代理。留空时 auto/proxy 模式从 PROXY_POOL 选择。
 # 代理可能包含账号密码，因此 WebUI 会把它保存到 .env。
-PLAN_CHECK_PROXY = ""
+PLAN_CHECK_PROXY = []
+
+# 套餐查询 / Codex Agent Token 生成的上游代理。填写后形成：本地代理 -> 动态代理 -> ChatGPT。
+# 例如 http://127.0.0.1:7897；留空则直接连接 PLAN_CHECK_PROXY。
+PLAN_CHECK_UPSTREAM_PROXY = ""
 
 # 查套餐 / 生成 Codex Agent Token 使用独立的短超时和有限重试，避免后台任务长时间卡住。
 PLAN_CHECK_TIMEOUT = 15.0
@@ -77,6 +57,45 @@ PLAN_CHECK_WORKERS = 3
 PLAN_CHECK_QUEUE_LIMIT = 500
 PLAN_CHECK_MIN_INTERVAL = 1.0
 PLAN_CHECK_JITTER = 0.8
+
+
+def _valid_port(value: str) -> bool:
+    return value.isdigit() and 1 <= int(value) <= 65535
+
+
+def normalize_proxy_url(value: str, default_scheme: str = "http") -> str:
+    """Normalize common proxy shorthand while preserving explicit URLs."""
+    text = str(value or "").strip()
+    if not text or "://" in text:
+        return text
+    parts = text.split(":", 3)
+    if len(parts) == 4 and parts[0] and _valid_port(parts[1]) and parts[2] and parts[3]:
+        host, port, username, password = parts
+        return f"{default_scheme}://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}"
+    if len(parts) == 4 and parts[0] and parts[1] and parts[2] and _valid_port(parts[3]):
+        username, password, host, port = parts
+        return f"{default_scheme}://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}"
+    parsed = urlparse(f"//{text}")
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if parsed.hostname and port:
+        return f"{default_scheme}://{text}"
+    return text
+
+
+def normalize_proxy_list(values, default_scheme: str = "http") -> list[str]:
+    """Normalize a multiline proxy list and omit empty entries."""
+    if values is None:
+        return []
+    if isinstance(values, str):
+        values = values.splitlines()
+    return [
+        normalized
+        for value in values
+        if (normalized := normalize_proxy_url(value, default_scheme=default_scheme))
+    ]
 
 
 def pick_proxy() -> str:
@@ -150,8 +169,10 @@ PROXY = pick_proxy()
 # ---- .env overrides for WebUI editable fields ----
 apply_env_overrides(globals(), {
     'PROXY_POOL': 'list_str_multiline',
+    'PROXY_POOL_UPSTREAM_PROXY': 'str',
     'PLAN_CHECK_PROXY_MODE': 'str',
-    'PLAN_CHECK_PROXY': 'str',
+    'PLAN_CHECK_PROXY': 'list_str_multiline',
+    'PLAN_CHECK_UPSTREAM_PROXY': 'str',
     'PLAN_CHECK_TIMEOUT': 'float',
     'PLAN_CHECK_MAX_ATTEMPTS': 'int',
     'PLAN_CHECK_RETRY_DELAY': 'float',
@@ -161,4 +182,6 @@ apply_env_overrides(globals(), {
     'PLAN_CHECK_MIN_INTERVAL': 'float',
     'PLAN_CHECK_JITTER': 'float',
 })
+PROXY_POOL = normalize_proxy_list(PROXY_POOL)
+PLAN_CHECK_PROXY = normalize_proxy_list(PLAN_CHECK_PROXY)
 PROXY = pick_proxy()

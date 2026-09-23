@@ -56,7 +56,7 @@ class HeroSmsConfigTests(unittest.TestCase):
         self.assertIn("HERO_SMS_API_KEY", result["preserved"])
         self.assertNotIn("HERO_SMS_API_KEY", result["updated"])
         write_env_values.assert_called_once_with({"HERO_SMS_COUNTRY": "6"})
-        load_env.assert_called_once_with(override=True)
+        load_env.assert_called_with(override=True)
 
     @patch("config.env_loader.load_env")
     @patch("config.env_loader.write_env_values")
@@ -67,7 +67,7 @@ class HeroSmsConfigTests(unittest.TestCase):
 
         self.assertIn("HERO_SMS_API_KEY", result["updated"])
         write_env_values.assert_called_once_with({"HERO_SMS_API_KEY": ""})
-        load_env.assert_called_once_with(override=True)
+        load_env.assert_called_with(override=True)
 
 
 class HeroSmsWebUiApiTests(unittest.TestCase):

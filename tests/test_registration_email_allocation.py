@@ -41,7 +41,7 @@ class DelayedEmailAllocationTests(unittest.TestCase):
 
         with patch.object(roxy, "_wait_for_email_input", side_effect=find_input), patch.object(
             roxy,
-            "_human_type_text",
+            "_fill_email_input",
             side_effect=lambda *args, **kwargs: events.append("type_email"),
         ), patch.object(
             roxy,

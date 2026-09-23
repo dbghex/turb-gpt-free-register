@@ -12,7 +12,8 @@ from config import email as _email_cfg
 from config import twofa as _twofa_cfg
 from core import db
 from core.account_export import setup_2fa
-from core.session import BrowserSession
+from core.session import BrowserSession, close_browser_session
+from core.proxy_utils import mask_proxy_url
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,19 @@ def _normalize_proxy(proxy: str | None) -> str | None:
     return None
 
 
+def _resolve_twofa_proxy(proxy: str | None):
+    """为 2FA 解析传输代理，显式目标代理也要套代理池上游。"""
+    target = _normalize_proxy(proxy)
+    if not target:
+        # 没有可复用的目标代理时交给 BrowserSession 从代理池选择；
+        # BrowserSession 会自行管理代理池链式中继生命周期。
+        return None, None, "pool"
+    from core.proxy_chain import open_proxy_pool_proxy
+
+    transport, relay = open_proxy_pool_proxy(target)
+    return transport, relay, "saved"
+
+
 def is_running(acc_id: int) -> bool:
     with _LOCK:
         return int(acc_id) in _RUNNING
@@ -103,9 +117,15 @@ class _TaskLogFilter(logging.Filter):
 def _close_session(session):
     if session is not None:
         try:
-            session.session.close()
+            close_browser_session(session)
         except Exception:
             pass
+        relay = getattr(session, "_security_proxy_relay", None)
+        if relay is not None:
+            try:
+                relay.close()
+            finally:
+                session._security_proxy_relay = None
 
 
 def _run_twofa(*, account_id: int, email: str, access_token: str, proxy: str | None,
@@ -147,7 +167,20 @@ def _run_twofa(*, account_id: int, email: str, access_token: str, proxy: str | N
         logger.info("[账号安全] 开始后台任务 account_id=%s trigger=%s", account_id, trigger)
 
         def new_session():
-            return BrowserSession(proxy=_normalize_proxy(proxy), fingerprint_seed=f"account:{email.strip().lower()}")
+            transport, relay, source = _resolve_twofa_proxy(proxy)
+            try:
+                created = BrowserSession(proxy=transport, fingerprint_seed=f"account:{email.strip().lower()}")
+            except Exception:
+                if relay is not None:
+                    relay.close()
+                raise
+            created._security_proxy_relay = relay
+            if source == "saved":
+                created.proxy_target = _normalize_proxy(proxy)
+            logger.info("[账号安全] 代理来源=%s target=%s transport=%s", source,
+                        mask_proxy_url(getattr(created, "proxy_target", None) or created.proxy or "direct"),
+                        mask_proxy_url(transport if transport is not None else created.proxy or "direct"))
+            return created
 
         if password_enabled:
             db.update_account_password_setup(account_id, {"status": "running"})

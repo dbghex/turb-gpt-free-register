@@ -13,7 +13,8 @@ class PlanCheckProxyConfigTests(unittest.TestCase):
              patch("config.env_loader.load_env"):
             field = next(x for x in config_editor.get_config() if x["key"] == "PLAN_CHECK_PROXY")
 
-        self.assertEqual(field["value"], proxy)
+        self.assertEqual(field["value"], [proxy])
+        self.assertEqual(field["type"], "list_str_multiline")
         self.assertFalse(field.get("secret", False))
         self.assertFalse(field.get("write_only", False))
 

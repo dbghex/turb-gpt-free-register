@@ -10,6 +10,7 @@
 当前支持：
     - GrizzlySMS：GET 文本接口，文档 https://api.grizzlysms.com
     - HeroSMS：SMS-Activate 兼容接口，国家/服务/价格在任务入队时锁定
+    - SMSBower：GET handler_api 兼容接口，文档 https://smsbower.app/cn/api?page=client
     - L：本地 JSON 管理接口，文档 L_API.md
     - H：本地 JSON 管理接口，文档 H_API.md
 
@@ -108,6 +109,10 @@ class SmsTaskSettings:
     # 显式构造的 settings 视为调用方已锁定；from_runtime 会设为 False，
     # 使 quote_buffer 在任务入队时重新读取一次实时价格。
     price_resolved: bool = True
+    smsbower_use_v2: bool = True
+    smsbower_min_price: str = ""
+    smsbower_provider_ids: str = ""
+    smsbower_except_provider_ids: str = ""
 
     @classmethod
     def from_runtime(cls, provider: str | None = None) -> "SmsTaskSettings":
@@ -150,6 +155,10 @@ class SmsTaskSettings:
             if price_mode == "unlimited":
                 max_price = ""
                 fixed_price = False
+        elif selected == "smsbower":
+            api_base = str(getattr(_cfg, "SMSBOWER_API_BASE", "") or "").strip()
+            api_key = str(getattr(_cfg, "SMSBOWER_API_KEY", "") or "").strip()
+            phone_exception = str(getattr(_cfg, "SMSBOWER_PHONE_EXCEPTION", "") or "").strip()
         elif selected == "l":
             api_base = str(getattr(_cfg, "L_API_BASE", "") or "").strip()
             api_key = str(getattr(_cfg, "L_ADMIN_AUTH_CODE", "") or "").strip()
@@ -181,6 +190,10 @@ class SmsTaskSettings:
             price_mode=price_mode,
             price_buffer_percent=price_buffer_percent,
             price_resolved=False,
+            smsbower_use_v2=_as_bool(getattr(_cfg, "SMSBOWER_USE_V2", True)),
+            smsbower_min_price=str(getattr(_cfg, "SMSBOWER_MIN_PRICE", "") or "").strip(),
+            smsbower_provider_ids=str(getattr(_cfg, "SMSBOWER_PROVIDER_IDS", "") or "").strip(),
+            smsbower_except_provider_ids=str(getattr(_cfg, "SMSBOWER_EXCEPT_PROVIDER_IDS", "") or "").strip(),
         )
 
     def public_snapshot(self) -> dict:
@@ -488,6 +501,89 @@ def _request_grizzly(
         raise SmsFatalProviderError(f"该服务被平台禁售：{text}")
 
     return text
+
+
+def _request_smsbower(http: CurlSession, params: dict, settings: SmsTaskSettings | None = None) -> str:
+    """发 SMSBower handler_api 请求，返回去空白的响应文本。"""
+    selected = settings or current_settings()
+    api_key = selected.api_key
+    if not api_key:
+        raise SmsProviderError("SMSBower API Key 不能为空")
+    base = selected.api_base
+    if not base:
+        raise SmsProviderError("SMSBOWER_API_BASE 不能为空")
+    resp = http.get(base, params={"api_key": api_key, **params})
+    text = (resp.text or "").strip()
+    if resp.status_code != 200:
+        raise SmsProviderError(f"SMSBower HTTP {resp.status_code}: {text[:200]}")
+    if text in ("BAD_KEY", "BAD_ACTION", "BAD_SERVICE", "WRONG_SERVICE", "BAD_STATUS", "NO_ACTIVATION"):
+        if text == "BAD_KEY":
+            raise SmsProviderError("SMSBower API key 无效（BAD_KEY）")
+        if text in ("BAD_SERVICE", "WRONG_SERVICE"):
+            raise SmsProviderError(f"SMSBower 服务代码无效（{text}），OpenAI/ChatGPT 请填写 dr")
+        if text == "NO_ACTIVATION":
+            raise SmsProviderError("SMSBower 激活 ID 不存在（NO_ACTIVATION）")
+        raise SmsProviderError(f"SMSBower 请求参数错误：{text}")
+    if text in ("NO_NUMBERS", "NO_BALANCE", "NO_MONEY"):
+        if text in ("NO_BALANCE", "NO_MONEY"):
+            raise SmsNoBalanceError(f"SMSBower 余额不足（{text}），请充值")
+        raise SmsNoNumbersError("SMSBower 暂无可用号码（NO_NUMBERS）")
+    if text.startswith("The service is prohibited"):
+        raise SmsProviderError(f"SMSBower 该服务被禁售：{text}")
+    return text
+
+
+def _smsbower_number_params(service: str | None, country: str | None, settings: SmsTaskSettings | None = None) -> dict:
+    selected = settings or current_settings()
+    service_code = str(service or selected.service or "").strip()
+    if service_code.lower() in ("openai", "chatgpt"):
+        service_code = "dr"
+    params = {
+        "action": "getNumberV2" if selected.smsbower_use_v2 else "getNumber",
+        "service": service_code,
+        "country": str(country or selected.country or "").strip(),
+    }
+    for key, value in (
+        ("maxPrice", selected.max_price),
+        ("minPrice", selected.smsbower_min_price),
+        ("providerIds", selected.smsbower_provider_ids),
+        ("exceptProviderIds", selected.smsbower_except_provider_ids),
+        ("phoneException", selected.phone_exception),
+    ):
+        value = str(value or "").strip()
+        if value:
+            params[key] = value
+    return params
+
+
+def _request_smsbower_number(http: CurlSession, params: dict, settings: SmsTaskSettings | None = None) -> tuple[dict, str]:
+    """按兼容性顺序取号，筛选无库存时放宽供应商条件。"""
+    candidates: list[dict] = [dict(params)]
+    if params.get("action") == "getNumberV2":
+        candidates.append({**params, "action": "getNumber"})
+    if params.get("providerIds"):
+        without_provider = {key: value for key, value in params.items() if key != "providerIds"}
+        candidates.append(without_provider)
+        if params.get("action") == "getNumberV2":
+            candidates.append({**without_provider, "action": "getNumber"})
+    unique = []
+    for candidate in candidates:
+        if candidate not in unique:
+            unique.append(candidate)
+    for index, candidate in enumerate(unique):
+        try:
+            return candidate, _request_smsbower(http, candidate, settings)
+        except SmsNoNumbersError:
+            if index + 1 < len(unique):
+                logger.warning("[SMSBower] 取号筛选无库存，放宽条件重试：action=%s providerIds=%s", candidate.get("action"), candidate.get("providerIds", "-"))
+                continue
+            raise
+        except SmsProviderError as exc:
+            if candidate.get("action") == "getNumberV2" and "BAD_ACTION" in str(exc) and index + 1 < len(unique):
+                logger.warning("[SMSBower] getNumberV2 不被当前接口支持，回退兼容接口")
+                continue
+            raise
+    raise SmsProviderError("SMSBower 没有可用的取号请求方案")
 
 
 def _l_url(path: str, settings: SmsTaskSettings | None = None) -> str:
@@ -938,6 +1034,29 @@ def acquire_number(
     own_http = http is None
     http = http or _http(selected)
     try:
+        if selected.provider == "smsbower":
+            params, text = _request_smsbower_number(http, _smsbower_number_params(service, country, selected), selected)
+            if params["action"] == "getNumberV2":
+                try:
+                    data = json.loads(text)
+                except Exception:
+                    data = None
+                if isinstance(data, dict):
+                    activation_id = str(data.get("activationId") or data.get("id") or "").strip()
+                    phone = str(data.get("phoneNumber") or data.get("phone") or "").strip()
+                    if activation_id and phone:
+                        _remember_acquisition(activation_id, selected)
+                        return activation_id, phone
+                raise SmsProviderError(f"SMSBower getNumberV2 响应格式异常：{text[:200]}")
+            if not text.startswith("ACCESS_NUMBER:"):
+                raise SmsProviderError(f"SMSBower getNumber 非预期响应：{text[:200]}")
+            parts = text.split(":", 2)
+            if len(parts) < 3:
+                raise SmsProviderError(f"SMSBower getNumber 响应格式异常：{text[:200]}")
+            activation_id, phone = parts[1].strip(), parts[2].strip()
+            _remember_acquisition(activation_id, selected)
+            return activation_id, phone
+
         if selected.provider == "l":
             payload = {
                 "service": service or selected.service,
@@ -1154,6 +1273,15 @@ def wait_for_sms_code(
                 time.sleep(interval)
                 continue
 
+            if provider == "smsbower":
+                text = _request_smsbower(http, {"action": "getStatus", "id": activation_id}, selected)
+                if text.startswith("STATUS_OK:"):
+                    return text.split(":", 1)[1].strip().strip("'")
+                if text == "STATUS_CANCEL":
+                    raise SmsProviderError("SMSBower 激活已被取消（STATUS_CANCEL）")
+                time.sleep(interval)
+                continue
+
             text = _request_grizzly(http, {"action": "getStatus", "id": activation_id}, selected)
 
             if text.startswith("STATUS_OK:"):
@@ -1201,6 +1329,10 @@ def set_status(
                 selected.provider.upper(), activation_id, status,
             )
             return "OK"
+        if selected.provider == "smsbower":
+            if int(status) == 1:
+                return "OK"
+            return _request_smsbower(http, {"action": "setStatus", "status": str(status), "id": activation_id}, selected)
         if selected.provider == "hero":
             if int(status) == 1:
                 logger.debug("[SMS:Hero] 忽略 status=1 id=%s", activation_id)
@@ -1237,6 +1369,14 @@ def complete(
         # H 成功 fetch-code 后后台会自动按多次收码策略重取；这里不 release。
         logger.info(f"[SMS:H] 已完成 id={activation_id}")
         _forget_acquisition(activation_id, selected)
+        return
+    if selected.provider == "smsbower":
+        try:
+            set_status(activation_id, 6, http=http, settings=selected)
+        except Exception as exc:
+            logger.warning(f"[SMSBower] 标记完成失败（不影响结果）：{exc}")
+        finally:
+            _forget_acquisition(activation_id, selected)
         return
     try:
         set_status(activation_id, 6, http=http, settings=selected)
@@ -1382,6 +1522,14 @@ def cancel(
             _release_h_number(activation_id, http=http, settings=selected)
         except Exception as exc:
             logger.warning(f"[SMS:H] 释放号码失败（不影响主流程）：id={activation_id}, {type(exc).__name__}: {exc}")
+        return
+    if selected.provider == "smsbower":
+        try:
+            set_status(activation_id, 8, http=http, settings=selected)
+        except Exception as exc:
+            logger.warning(f"[SMSBower] 释放号码失败（不影响主流程）：{exc}")
+        finally:
+            _forget_acquisition(activation_id, selected)
         return
 
     if not background:
